@@ -21813,7 +21813,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     
                                     local isHoldingSpace = cheat_client.custom_flight_functions["IsKeyDown"](uis, "Space")
                                     if isHoldingSpace then eVector += uVector end
-                                    if cheat_client.custom_flight_functions["IsKeyDown"](uis, "LeftShift") then eVector -= uVector end
+                                    if cheat_client.custom_flight_functions["IsKeyDown"](uis, "LeftControl") then eVector -= uVector end
                                     
                                     local isInAir = huma and huma.FloorMaterial == Enum.Material.Air
                                     local isInWater = huma and (huma:GetState() == Enum.HumanoidStateType.Swimming or huma:GetState() == Enum.HumanoidStateType.PlatformStanding and huma.FloorMaterial == Enum.Material.Water)
@@ -21821,7 +21821,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         eVector -= Vector3.new(0, 1, 0)
                                     end
 
-                                    local isMovingDown = cheat_client.custom_flight_functions["IsKeyDown"](uis, "LeftShift") or (isAutoFallEnabled and isInAir and not isHoldingSpace and not isInWater)
+                                    local isMovingDown = cheat_client.custom_flight_functions["IsKeyDown"](uis, "LeftControl") or (isAutoFallEnabled and isInAir and not isHoldingSpace and not isInWater)
                                     if isNoclipEnabled and not isMovingDown and rootPart.AssemblyLinearVelocity.Y < 0 then
                                         local currentVelocity = rootPart.AssemblyLinearVelocity
                                         rootPart.AssemblyLinearVelocity = Vector3.new(currentVelocity.X, 0, currentVelocity.Z)
@@ -26675,9 +26675,9 @@ end
 
                         local isHoldingSpace = cheat_client.custom_flight_functions["IsKeyDown"](uis, "Space")
                         if isHoldingSpace then eVector += uVector end
-                        if cheat_client.custom_flight_functions["IsKeyDown"](uis, "LeftShift") then eVector -= uVector end
+                        if cheat_client.custom_flight_functions["IsKeyDown"](uis, "LeftControl") then eVector -= uVector end
 
-                        local isMovingDown = cheat_client.custom_flight_functions["IsKeyDown"](uis, "LeftShift")
+                        local isMovingDown = cheat_client.custom_flight_functions["IsKeyDown"](uis, "LeftControl")
                         if not isMovingDown and rootPart.AssemblyLinearVelocity.Y < 0 then
                             local currentVelocity = rootPart.AssemblyLinearVelocity
                             rootPart.AssemblyLinearVelocity = Vector3.new(currentVelocity.X, 0, currentVelocity.Z)
