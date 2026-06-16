@@ -6971,7 +6971,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         if not (Toggles and Toggles.day_farm and Toggles.day_farm.Value) then return end
                         if no_kick() then return end
 
-                        if descendant:IsA("Tool") and (descendant.Name == "Perflora" or descendant.Name == "Pebble" or descendant.Name == "Armis" or descendant.Name == "Celeritas" or descendant.Name == "Dagger throw" or descendant.Name == "Vulnere" or descendant.Name == "Justice Spears" or descendant.Name == "Spindulys") then
+                        if descendant:IsA("Tool") and (descendant.Name == "Perflora" or descendant.Name == "Pebble" or descendant.Name == "Armis" or descendant.Name == "Celeritas" or descendant.Name == "Dagger Throw" or descendant.Name == "Vulnere" or descendant.Name == "Justice Spears" or descendant.Name == "Spindulys") then
                             local character = descendant.Parent
                             if character and character:IsA("Model") then
                                 local player = plrs:GetPlayerFromCharacter(character)
@@ -6986,7 +6986,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         for _, other_player in next, plrs:GetPlayers() do
                             if other_player ~= plr and other_player.Character then
                                 for _, tool in next, other_player.Character:GetChildren() do
-                                    if tool:IsA("Tool") and (tool.Name == "Perflora" or tool.Name == "Pebble" or tool.Name == "Celeritas" or tool.Name == "Armis" or tool.Name == "Dagger throw" or tool.Name == "Vulnere" or tool.Name == "Spindulys" or tool.Name == "Justice spears") then
+                                    if tool:IsA("Tool") and (tool.Name == "Perflora" or tool.Name == "Pebble" or tool.Name == "Celeritas" or tool.Name == "Armis" or tool.Name == "Dagger Throw" or tool.Name == "Vulnere" or tool.Name == "Spindulys" or tool.Name == "Justice spears") then
                                         DayfarmServerhop(string.format("%s (%s) already has dangerous item: %s", other_player.Name, other_player.UserId, tool.Name))
                                         return
                                     end
@@ -16602,9 +16602,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             group_trinket_bot:AddDropdown("EmergencyServerhopConditions", {
                 Text = "Emergency Serverhop Conditions",
                 Tooltip = "Select items that trigger instant serverhop when equipped by another player (no emergency gate)",
-                Values = {"Perflora", "Pebble", "Armis", "Dagger throw", "Celeritas", "Vulnere", "Spindulys", "Justice Spears"},
+                Values = {"Perflora", "Pebble", "Armis", "Dagger Throw", "Celeritas", "Vulnere", "Spindulys", "Justice Spears"},
                 Multi = true,
-                Default = {"Perflora", "Pebble", "Armis", "Dagger throw", "Celeritas", "Vulnere", "Spindulys", "Justice Spears"},
+                Default = {"Perflora", "Pebble", "Armis", "Dagger Throw", "Celeritas", "Vulnere", "Spindulys", "Justice Spears"},
                 Compact = true
             })
 
