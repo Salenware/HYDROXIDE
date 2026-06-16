@@ -1,11 +1,12 @@
 -- // hydroxide.solutions PROPIETRARRY code?????
+-- // whoever reads this, https://www.youtube.com/watch?v=j50ZssEojtM this rap is lowk fire and i found it when i was trying to find rappers from Montana and this one just totally slaps!!! - baba zyu
 
 --[[
 getgenv().stella_token = "the_token_here"
 getgenv().stella_debug = false  -- optional, enables debug logging
 
 pcall(function()
-    loadstring(game:HttpGet("https://api.hydroxide.solutions/hello.lua",true))()
+    loadstring(game:HttpGet("https://stella.heroinhound.cc/stella.lua",true))() -- old url: https://api.hydroxide.solutions/hello.lua
 end)
 --]]
 
@@ -52,7 +53,8 @@ local success, err = xpcall(function()
     local config = {
         api_url = "https://stella.heroinhound.cc/api/bulk",
         api_token = user_token,
-        send_interval = 35,
+        send_interval = 35,       -- data payload sends
+        chat_flush_interval = 10, -- chat only flush
         api_fetch_interval = 300, -- seconds between Roblox API server list fetches
 
         debug = user_debug,
@@ -79,18 +81,68 @@ local success, err = xpcall(function()
         end
     })
 
-    for _, v in pairs(getconnections(services.ScriptContext.Error)) do
-        v:Disable()
-    end
+    pcall(function()
+        if not getconnections then return end
+        for _, v in pairs(getconnections(services.ScriptContext.Error)) do
+            v:Disable()
+        end
+    end)
 
     local http_service = services.HttpService
     local players = services.Players
     local replicated_storage = services.ReplicatedStorage
     local workspace = services.Workspace
 
+    -- chat capture: hook .Chatted for everyone, stamp w/ servertime so backend dedups
+    local chat_buffer = {}
+    local CHAT_BUFFER_MAX = 200
+    local CHAT_TEXT_MAX = 200
+    local chat_connected = setmetatable({}, { __mode = "k" })
+
+    local function server_time_now()
+        local ok, t = pcall(function() return workspace:GetServerTimeNow() end)
+        if ok and type(t) == "number" and t > 0 then return t end
+        return os.time()
+    end
+
+    local function record_chat(player, message)
+        if type(message) ~= "string" or message == "" then return end
+        local text = message
+        if #text > CHAT_TEXT_MAX then text = string.sub(text, 1, CHAT_TEXT_MAX) end
+        chat_buffer[#chat_buffer + 1] = {
+            id = player.UserId,
+            name = player.Name,
+            text = text,
+            t = server_time_now(),
+        }
+        debug_info("print", "chat captured:", player.Name, "->", text, "(buffer", #chat_buffer .. ")")
+        if #chat_buffer > CHAT_BUFFER_MAX then
+            table.remove(chat_buffer, 1)
+        end
+    end
+
+    local function hook_player_chat(player)
+        if chat_connected[player] then return end
+        chat_connected[player] = true
+        local ok = pcall(function()
+            player.Chatted:Connect(function(message)
+                pcall(record_chat, player, message)
+            end)
+        end)
+        if not ok then chat_connected[player] = nil end
+    end
+
+    local function init_chat_capture()
+        for _, player in ipairs(players:GetPlayers()) do
+            hook_player_chat(player)
+        end
+        players.PlayerAdded:Connect(hook_player_chat)
+    end
+
     local race_colors = {}
     local race_eye_colors = {}
     local player_races = {}
+    local face_textures = {} -- decal texture id -> face name, built from Assets.Faces
 
     local race_tools = {
         ["Bloodline"] = "Haseldan",
@@ -122,6 +174,35 @@ local success, err = xpcall(function()
         return success and result
     end
 
+    local function nearest_race(target, list)
+        if not target then return nil end
+        local best, best_d = nil, math.huge
+        for _, v in next, list do
+            local c = v[1]
+            local ok, d = pcall(function()
+                return math.max(math.abs(target.R - c.R), math.abs(target.G - c.G), math.abs(target.B - c.B))
+            end)
+            if ok and d < best_d then best_d = d; best = v[2] end
+        end
+        if best and best_d <= 0.02 then return best end
+        return nil
+    end
+
+    -- register a race skin color plus its vampire (s*0.2) and blight/lich (s*0.4)
+    local function add_skin_color(color, name)
+        if not color then return end
+        table.insert(race_colors, { color, name })
+        local ok, h, s, v = pcall(function() return color:ToHSV() end)
+        if ok and h ~= nil then
+            table.insert(race_colors, { Color3.fromHSV(h, s * 0.2, v), name })
+            table.insert(race_colors, { Color3.fromHSV(h, s * 0.4, v), name })
+        end
+    end
+
+    local function color_race(name)
+        return name == "Navaran" and "LesserNavaran" or name
+    end
+
     local function init_race_colors()
         local info = replicated_storage:FindFirstChild("Info")
         if not info then return end
@@ -132,20 +213,16 @@ local success, err = xpcall(function()
         for _, race_category in next, races:GetChildren() do
             if not race_category:IsA("Folder") then continue end
 
+            local name = color_race(race_category.Name)
+
             local direct_skin_color = race_category:FindFirstChild("SkinColor")
             if direct_skin_color and direct_skin_color:IsA("Color3Value") then
-                table.insert(race_colors, {
-                    direct_skin_color.Value,
-                    race_category.Name
-                })
+                add_skin_color(direct_skin_color.Value, name)
             end
 
             local direct_eye_color = race_category:FindFirstChild("EyeColor")
             if direct_eye_color and direct_eye_color:IsA("Color3Value") then
-                table.insert(race_eye_colors, {
-                    direct_eye_color.Value,
-                    race_category.Name
-                })
+                table.insert(race_eye_colors, { direct_eye_color.Value, name })
             end
 
             for _, race_variant in next, race_category:GetChildren() do
@@ -153,18 +230,12 @@ local success, err = xpcall(function()
 
                 local skin_color = race_variant:FindFirstChild("SkinColor")
                 if skin_color and skin_color:IsA("Color3Value") then
-                    table.insert(race_colors, {
-                        skin_color.Value,
-                        race_category.Name
-                    })
+                    add_skin_color(skin_color.Value, name)
                 end
 
                 local eye_color = race_variant:FindFirstChild("EyeColor")
                 if eye_color and eye_color:IsA("Color3Value") then
-                    table.insert(race_eye_colors, {
-                        eye_color.Value,
-                        race_variant.Name ~= race_category.Name and race_category.Name or race_category.Name
-                    })
+                    table.insert(race_eye_colors, { eye_color.Value, name })
                 end
             end
         end
@@ -174,6 +245,28 @@ local success, err = xpcall(function()
             Color3.fromRGB(111, 16, 158),
             "Cameo"
         })
+    end
+
+    local function init_face_map()
+        local assets = replicated_storage:FindFirstChild("Assets")
+        local faces = assets and assets:FindFirstChild("Faces")
+        if not faces then return end
+        for _, v in next, faces:GetDescendants() do
+            if v:IsA("Decal") then
+                local ok, tex = pcall(function() return v.Texture end)
+                if ok and tex and tex ~= "" then face_textures[tex] = v.Name end
+            end
+        end
+    end
+
+    local function get_player_face(player)
+        local character = player.Character
+        local head = character and character:FindFirstChild("Head")
+        local rl_face = head and head:FindFirstChild("RLFace")
+        if not rl_face then return nil end
+        local ok, tex = pcall(function() return rl_face.Texture end)
+        if ok and tex then return face_textures[tex] end
+        return nil
     end
 
     local function get_player_tools(player)
@@ -279,13 +372,8 @@ local success, err = xpcall(function()
                 if race_found == "Unknown" then
                     local success, head_color = pcall(function() return head.Color end)
                     if success and head_color then
-                        for _, v in next, race_colors do
-                            local skin_color, race_name = v[1], v[2]
-                            if colors_match(head_color, skin_color) then
-                                race_found = race_name
-                                break
-                            end
-                        end
+                        local m = nearest_race(head_color, race_colors)
+                        if m then race_found = m end
                     end
                 end
             end
@@ -570,6 +658,7 @@ local success, err = xpcall(function()
             data.backpack_data = get_player_tools(player)
             data.edict_hint = get_edict_hint(player)
             data.race = get_player_race(player)
+            data.face = get_player_face(player)
             data.artifacts = get_player_artifact(player)
             data.dye = get_player_dye(player)
             data.blessings = get_player_blessings(player)
@@ -708,24 +797,18 @@ local success, err = xpcall(function()
         local local_player = players.LocalPlayer
 
         for _, player in ipairs(players:GetPlayers()) do
-            if player == local_player then
-                continue
+            if player ~= local_player then
+                local success, player_data = pcall(get_player_data, player)
+                if success and player_data then
+                    table.insert(player_list, player_data)
+                elseif not success then
+                    debug_info("warn", "Failed to collect data for player:", player.Name, "| Error:", tostring(player_data))
+                end
             end
-
-            local success, player_data = pcall(get_player_data, player)
-            if success and player_data then
-                table.insert(player_list, player_data)
-                table.insert(current_player_list, {
-                    name = player.Name,
-                    id = player.UserId
-                })
-            else
-                debug_info("warn", "Failed to collect data for player:", player.Name, "| Error:", tostring(player_data))
-                table.insert(current_player_list, {
-                    name = player.Name,
-                    id = player.UserId
-                })
-            end
+            table.insert(current_player_list, {
+                name = player.Name,
+                id = player.UserId
+            })
         end
 
         local success, servers = pcall(get_all_servers)
@@ -806,187 +889,159 @@ local success, err = xpcall(function()
     end
 
     local function generate_signature(token, timestamp, sender_id, job_id, body)
-        local body_hash = crypt.hash(body, "sha256")
-        return crypt.hash(token .. timestamp .. sender_id .. job_id .. body_hash, "sha256")
+        local body_hash = string.lower(crypt.hash(body, "sha256"))
+        return string.lower(crypt.hash(token .. timestamp .. sender_id .. job_id .. body_hash, "sha256"))
+    end
+
+    -- one signed POST helper; sig + headers were copy-pasted across 4 senders.
+    local function signed_post(url, body, label)
+        local success, response = pcall(function()
+            local json_payload = http_service:JSONEncode(body)
+            local timestamp = tostring(os.time())
+            local sender_id = tostring(players.LocalPlayer.UserId)
+            local job_id = game.JobId
+            local signature = generate_signature(config.api_token, timestamp, sender_id, job_id, json_payload)
+            return req({
+                Url = url,
+                Method = "POST",
+                Headers = {
+                    ["Content-Type"] = "application/json",
+                    ["Authorization"] = "Bearer " .. config.api_token,
+                    ["X-Timestamp"] = timestamp,
+                    ["X-Sender-ID"] = sender_id,
+                    ["X-Job-ID"] = job_id,
+                    ["X-Signature"] = signature,
+                },
+                Body = json_payload,
+            })
+        end)
+
+        if success and response and response.Success then
+            debug_info("print", (label or "Request") .. " ok")
+            return true
+        elseif success then
+            debug_info("warn", (label or "Request") .. " api error:", response and response.StatusCode)
+        else
+            debug_info("warn", (label or "Request") .. " failed:", tostring(response))
+        end
+        return false
     end
 
     local function send_payload(payload)
-        local json_payload = http_service:JSONEncode(payload)
-        local timestamp = tostring(os.time())
-        local sender_id = tostring(players.LocalPlayer.UserId)
-        local job_id = game.JobId
-        local signature = generate_signature(config.api_token, timestamp, sender_id, job_id, json_payload)
+        return signed_post(config.api_url, payload, "Data")
+    end
 
-        local success, response = pcall(req, {
-            Url = config.api_url,
-            Method = "POST",
-            Headers = {
-                ["Content-Type"] = "application/json",
-                ["Authorization"] = "Bearer " .. config.api_token,
-                ["X-Timestamp"] = timestamp,
-                ["X-Sender-ID"] = sender_id,
-                ["X-Job-ID"] = job_id,
-                ["X-Signature"] = signature,
-            },
-            Body = json_payload,
-        })
-
-        if success and response.Success then
-            debug_info("print", "Data sent successfully:", response.Body)
-        elseif success then
-            debug_info("warn", "API error:", response.StatusCode, response.StatusMessage)
-        else
-            debug_info("warn", "Request failed:", response)
+    local function flush_chat()
+        if #chat_buffer == 0 then return end
+        local chat_to_send = chat_buffer
+        chat_buffer = {}
+        local ok = signed_post(config.api_url, {
+            sender_job_id = game.JobId,
+            chat = chat_to_send,
+        }, "Chat")
+        if not ok then
+            for _, m in ipairs(chat_to_send) do
+                chat_buffer[#chat_buffer + 1] = m
+            end
+            while #chat_buffer > CHAT_BUFFER_MAX do
+                table.remove(chat_buffer, 1)
+            end
         end
-
-        return success and response.Success
     end
 
     local function send_player_leave(roblox_id)
-        local leave_url = config.api_url:gsub("/bulk$", "/player/leave")
-        local json_payload = http_service:JSONEncode({ roblox_id = roblox_id })
-        local timestamp = tostring(os.time())
-        local sender_id = tostring(players.LocalPlayer.UserId)
-        local job_id = game.JobId
-        local signature = generate_signature(config.api_token, timestamp, sender_id, job_id, json_payload)
-
-        local success, response = pcall(req, {
-            Url = leave_url,
-            Method = "POST",
-            Headers = {
-                ["Content-Type"] = "application/json",
-                ["Authorization"] = "Bearer " .. config.api_token,
-                ["X-Timestamp"] = timestamp,
-                ["X-Sender-ID"] = sender_id,
-                ["X-Job-ID"] = job_id,
-                ["X-Signature"] = signature,
-            },
-            Body = json_payload,
-        })
-
-        if success and response.Success then
-            debug_info("print", "Player leave sent for:", roblox_id)
-        elseif success then
-            debug_info("warn", "Player leave API error:", response.StatusCode)
-        else
-            debug_info("warn", "Player leave request failed:", response)
-        end
-    end
-
-    local function send_unobserve()
-        local unobserve_url = config.api_url:gsub("/bulk$", "/server/unobserve")
-        local job_id = game.JobId
-        local json_payload = http_service:JSONEncode({ job_id = job_id })
-        local timestamp = tostring(os.time())
-        local sender_id = tostring(players.LocalPlayer.UserId)
-        local signature = generate_signature(config.api_token, timestamp, sender_id, job_id, json_payload)
-
-        local success, response = pcall(req, {
-            Url = unobserve_url,
-            Method = "POST",
-            Headers = {
-                ["Content-Type"] = "application/json",
-                ["Authorization"] = "Bearer " .. config.api_token,
-                ["X-Timestamp"] = timestamp,
-                ["X-Sender-ID"] = sender_id,
-                ["X-Job-ID"] = job_id,
-                ["X-Signature"] = signature,
-            },
-            Body = json_payload,
-        })
-
-        if success and response.Success then
-            debug_info("print", "Server unobserve sent for:", game.JobId)
-        elseif success then
-            debug_info("warn", "Server unobserve API error:", response.StatusCode)
-        else
-            debug_info("warn", "Server unobserve request failed:", response)
-        end
+        signed_post(config.api_url:gsub("/bulk$", "/player/leave"), { roblox_id = roblox_id }, "Player leave")
     end
 
     local function send_batch_player_leave(roblox_ids, job_id)
-        local batch_url = config.api_url:gsub("/bulk$", "/players/leave")
-        local payload = { roblox_ids = roblox_ids }
-        if job_id then
-            payload.job_id = job_id
-        end
-        local json_payload = http_service:JSONEncode(payload)
-        local timestamp = tostring(os.time())
-        local sender_id = tostring(players.LocalPlayer.UserId)
-        local sig_job_id = game.JobId
-        local signature = generate_signature(config.api_token, timestamp, sender_id, sig_job_id, json_payload)
-
-        local success, response = pcall(req, {
-            Url = batch_url,
-            Method = "POST",
-            Headers = {
-                ["Content-Type"] = "application/json",
-                ["Authorization"] = "Bearer " .. config.api_token,
-                ["X-Timestamp"] = timestamp,
-                ["X-Sender-ID"] = sender_id,
-                ["X-Job-ID"] = sig_job_id,
-                ["X-Signature"] = signature,
-            },
-            Body = json_payload,
-        })
-
-        if success and response.Success then
-            debug_info("print", "Batch player leave sent for", #roblox_ids, "players")
-        elseif success then
-            debug_info("warn", "Batch player leave API error:", response.StatusCode)
-        else
-            debug_info("warn", "Batch player leave request failed:", response)
-        end
+        local body = { roblox_ids = roblox_ids }
+        if job_id then body.job_id = job_id end
+        signed_post(config.api_url:gsub("/bulk$", "/players/leave"), body, "Batch player leave")
     end
 
     local function main()
         debug_info("print", "Player data collector started")
         debug_info("print", "Sending data every", config.send_interval, "seconds")
 
-        init_race_colors()
+        pcall(init_race_colors)
+        pcall(init_face_map)
+        pcall(init_chat_capture)
 
         while true do
-            local payload = collect_all_data()
-            debug_info("print", "Collected", #payload.players, "players")
-            send_payload(payload)
+            -- guarding loop now
+            local ok, err = pcall(function()
+                local payload = collect_all_data()
+                debug_info("print", "Collected", #payload.players, "players")
+                send_payload(payload)
+            end)
+            if not ok then
+                debug_info("warn", "Collect/send cycle errored, retrying next tick:", tostring(err))
+            end
             task.wait(config.send_interval)
         end
     end
 
     task.spawn(main)
 
+    task.spawn(function()
+        while true do
+            task.wait(config.chat_flush_interval)
+            local ok, err = pcall(flush_chat)
+            if not ok then
+                debug_info("warn", "Chat flush errored, retrying next tick:", tostring(err))
+            end
+        end
+    end)
+
+    pcall(function()
+        local queue = queue_on_teleport or queueteleport
+        if not queue then
+            debug_info("warn", "no queue_on_teleport; won't auto execute after serverhop")
+            return
+        end
+        local boot = string.format(
+            'getgenv().stella_token=%q getgenv().stella_debug=%s pcall(function() loadstring(game:HttpGet(%q,true))() end)',
+            user_token, tostring(config.debug), "https://stella.heroinhound.cc/stella.lua"
+        )
+        queue(boot)
+        debug_info("print", "queued for serverhop with token:", tostring(user_token):sub(1, 8) .. "...")
+    end)
+
     players.PlayerAdded:Connect(function(player)
         task.wait(5)
-        local payload = collect_all_data()
-        send_payload(payload)
+        pcall(function()
+            send_payload(collect_all_data())
+        end)
     end)
 
     local server_leaving = false
 
     players.PlayerRemoving:Connect(function(player)
-        if player_races[player] then
-            player_races[player] = nil
-        end
-
-        if player == players.LocalPlayer then
-            -- Leaving server: batch-clear all players + unobserve in one request
-            server_leaving = true
-            local roblox_ids = {}
-            for _, p in ipairs(players:GetPlayers()) do
-                table.insert(roblox_ids, p.UserId)
+        pcall(function()
+            if player_races[player] then
+                player_races[player] = nil
             end
-            send_batch_player_leave(roblox_ids, game.JobId)
-            return
-        end
 
-        -- Normal single-player departure (skip if server is shutting down)
-        if server_leaving then return end
-        task.spawn(function()
-            send_player_leave(player.UserId)
+            if player == players.LocalPlayer then
+                -- Leaving server: batch clear all players + unobserve in one request
+                server_leaving = true
+                local roblox_ids = {}
+                for _, p in ipairs(players:GetPlayers()) do
+                    roblox_ids[#roblox_ids + 1] = p.UserId
+                end
+                send_batch_player_leave(roblox_ids, game.JobId)
+                return
+            end
+
+            -- Normal single player departure (skip if server is shutting down)
+            if server_leaving then return end
+            local uid = player.UserId
+            task.spawn(function()
+                pcall(send_player_leave, uid)
+            end)
+            task.wait(1)
+            send_payload(collect_all_data())
         end)
-        task.wait(1)
-        local payload = collect_all_data()
-        send_payload(payload)
     end)
 end, function(err)
     return debug.traceback(err, 2)
