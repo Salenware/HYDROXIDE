@@ -26355,7 +26355,7 @@ end
         end
 
         do
-            local valid_tools = { Celeritas = true, Armis = true, Vulnere = true, ["Dagger Throw"] = true, Arguere = true, Grapple = true, ["Autumn Rain"] = true, Ignis = true, Percutiens = true }
+            local valid_tools = { Celeritas = true, Armis = true, Vulnere = true, ["Dagger Throw"] = true, Arguere = true, Grapple = true, ["Autumn Rain"] = true, Ignis = true}
 
             local get_nearest_player = LPH_NO_VIRTUALIZE(function()
                 local players_list = plrs:GetPlayers()
