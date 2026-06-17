@@ -60,6 +60,74 @@ do
     end
 end
 
+local HXD_DEFAULT_REMOTE_ROOT = "https://raw.githubusercontent.com/Salenware/HYDROXIDE/refs/heads/main/"
+local HXD_DEFAULT_LOCAL_ROOT = "HYDROXIDE_REPO/"
+local hxd_env = getgenv()
+
+hxd_env.HXD_REMOTE_ROOT = hxd_env.HXD_REMOTE_ROOT or HXD_DEFAULT_REMOTE_ROOT
+hxd_env.HXD_LOCAL_ROOT = hxd_env.HXD_LOCAL_ROOT or HXD_DEFAULT_LOCAL_ROOT
+
+local function hxd_local_path(path)
+    return (hxd_env.HXD_LOCAL_ROOT or HXD_DEFAULT_LOCAL_ROOT) .. path
+end
+
+local function hxd_has_local(path)
+    return isfile and isfile(hxd_local_path(path))
+end
+
+if hxd_env.HXD_LOAD_MODE ~= "local" and hxd_env.HXD_LOAD_MODE ~= "remote" then
+    hxd_env.HXD_LOAD_MODE = hxd_has_local("ROGUE/rogue_ui.lua") and "local" or "remote"
+end
+
+local function hxd_load_local(path)
+    local local_path = hxd_local_path(path)
+
+    if loadfile then
+        local fn, err = loadfile(local_path)
+        if not fn then
+            error(err)
+        end
+        return fn()
+    end
+
+    if readfile then
+        local code = readfile(local_path)
+        local fn, err = loadstring(code)
+        if not fn then
+            error(err)
+        end
+        return fn()
+    end
+
+    error("No local file loader available")
+end
+
+local function hxd_load(path)
+    if hxd_env.HXD_LOAD_MODE == "local" and hxd_has_local(path) then
+        return hxd_load_local(path)
+    end
+
+    local remote_root = hxd_env.HXD_REMOTE_ROOT or HXD_DEFAULT_REMOTE_ROOT
+    local code = game:HttpGet(remote_root .. path, true)
+    local fn, err = loadstring(code)
+    if not fn then
+        error(err)
+    end
+    return fn()
+end
+
+local function hxd_reexecute_script()
+    local mode = hxd_env.HXD_LOAD_MODE == "local" and "local" or "remote"
+    local local_root = hxd_env.HXD_LOCAL_ROOT or HXD_DEFAULT_LOCAL_ROOT
+    local remote_root = hxd_env.HXD_REMOTE_ROOT or HXD_DEFAULT_REMOTE_ROOT
+
+    if mode == "local" then
+        return string.format([[if not game:IsLoaded() then game.Loaded:Wait() end task.wait(1) getgenv().HXD_LOAD_MODE=%q getgenv().HXD_LOCAL_ROOT=%q getgenv().HXD_REMOTE_ROOT=%q local path=getgenv().HXD_LOCAL_ROOT.."ROGUE/rogue_ui.lua" if isfile and not isfile(path) then print("[QUEUE ERROR] Local script missing:",path) return end local fn,compileErr if loadfile then fn,compileErr=loadfile(path) elseif readfile then local code=readfile(path) fn,compileErr=loadstring(code) else print("[QUEUE ERROR] No local file loader") return end if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) return end local ok,runErr=pcall(fn) if not ok then print("[QUEUE ERROR] Runtime failed:",runErr) print("[QUEUE DEBUG] Traceback:",debug.traceback()) end]], mode, local_root, remote_root)
+    end
+
+    return string.format([[if not game:IsLoaded() then game.Loaded:Wait() end task.wait(1) getgenv().HXD_LOAD_MODE=%q getgenv().HXD_LOCAL_ROOT=%q getgenv().HXD_REMOTE_ROOT=%q local url=getgenv().HXD_REMOTE_ROOT.."ROGUE/rogue_ui.lua" local s,code=pcall(function() return game:HttpGet(url,true) end) if not s then print("[QUEUE ERROR] HttpGet failed:",code) return end local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) print("[QUEUE DEBUG] Response preview:",tostring(code):sub(1,200)) return end local ok,runErr=pcall(fn) if not ok then print("[QUEUE ERROR] Runtime failed:",runErr) print("[QUEUE DEBUG] Traceback:",debug.traceback()) end]], mode, local_root, remote_root)
+end
+
 local anticheat_mode = "Normal"
 pcall(function()
     if isfile and readfile and isfile("HYDROXIDE/anticheat_mode.txt") then
@@ -3120,9 +3188,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         end
     end
     
-    local repo = "https://raw.githubusercontent.com/Salenware/HYDROXIDE/refs/heads/main/"
     local success, library_func = pcall(function()
-        return loadstring(game:HttpGet(repo .. "DEPENDENCIES/Library.lua", true))()
+        return hxd_load("DEPENDENCIES/Library.lua")
     end)
 
     if success then
@@ -3133,8 +3200,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         getgenv().Options = library.Options or {}
         getgenv().Labels = library.Labels or {}
 
-        local SaveManager = loadstring(game:HttpGet(repo .. "DEPENDENCIES/SaveManager.lua"))()
-        local ThemeManager = loadstring(game:HttpGet(repo .. "DEPENDENCIES/ThemeManager.lua"))()
+        local SaveManager = hxd_load("DEPENDENCIES/SaveManager.lua")
+        local ThemeManager = hxd_load("DEPENDENCIES/ThemeManager.lua")
 
         SaveManager:SetLibrary(library)
         ThemeManager:SetLibrary(library)
@@ -6920,8 +6987,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 local queue_func = queueteleport or queue_on_teleport
                                 if queue_func then
                                     local success, err = pcall(function()
-                                        local loader_script = game
-										loader_script = [[if not game:IsLoaded() then game.Loaded:Wait() end task.wait(1) local s,code=pcall(function() return game:HttpGet("https://raw.githubusercontent.com/Salenware/HYDROXIDE/refs/heads/main/ROGUE/rogue_ui.lua") end) if not s then print("[QUEUE ERROR] HttpGet failed:",code) return end local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) print("[QUEUE DEBUG] Response preview:",tostring(code):sub(1,200)) return end local ok,runErr=pcall(fn) if not ok then print("[QUEUE ERROR] Runtime failed:",runErr) print("[QUEUE DEBUG] Traceback:",debug.traceback()) end]]
+                                        local loader_script = hxd_reexecute_script()
                                         queue_func(loader_script)
                                     end)
 
@@ -13267,10 +13333,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         if queue_func then
                             local success, err = pcall(function()
                                 local loader_script
-                                if readfile and isfile and isfile("bazaar_loader.lua") then
+                                if hxd_env.HXD_LOAD_MODE ~= "local" and readfile and isfile and isfile("bazaar_loader.lua") then
                                     loader_script = [[local code=readfile("bazaar_loader.lua") local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) print("[QUEUE DEBUG] Code preview:",code:sub(1,200)) return end local s,runErr=pcall(fn) if not s then print("[QUEUE ERROR] Runtime failed:",runErr) print("[QUEUE DEBUG] Traceback:",debug.traceback()) end]]
                                 else
-                                    loader_script = [[if not game:IsLoaded() then game.Loaded:Wait() end task.wait(1) local s,code=pcall(function() return game:HttpGet("https://raw.githubusercontent.com/Salenware/HYDROXIDE/refs/heads/main/ROGUE/rogue_ui.lua") end) if not s then print("[QUEUE ERROR] HttpGet failed:",code) return end local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) print("[QUEUE DEBUG] Response preview:",tostring(code):sub(1,200)) return end local ok,runErr=pcall(fn) if not ok then print("[QUEUE ERROR] Runtime failed:",runErr) print("[QUEUE DEBUG] Traceback:",debug.traceback()) end]]
+                                    loader_script = hxd_reexecute_script()
                                 end
                                 queue_func(loader_script)
                             end)
@@ -16683,7 +16749,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     "Amulet of the White King",
                     "Phoenix Down",
                     "Scroll of Trahere",
-                    "Scroll of Telorum"
+                    "Scroll of Telorum",
+                    "Scroll of Sraunus"
                 },
                 Multi = true,
                 Default = 1,
@@ -19529,7 +19596,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     Callback = function(state)
                         if state then
                             local success, result = pcall(function()
-                                local LoggerGui = loadstring(game:HttpGet(repo .. "DEPENDENCIES/Chatlogger.lua"))()
+                                local LoggerGui = hxd_load("DEPENDENCIES/Chatlogger.lua")
                                 return LoggerGui.new(cheat_client, utility)
                             end)
 
@@ -26977,10 +27044,10 @@ end
                     if queue_func then
                         local success, err = pcall(function()
                             local loader_script
-                            if readfile and isfile and isfile("bazaar_loader.lua") then
+                            if hxd_env.HXD_LOAD_MODE ~= "local" and readfile and isfile and isfile("bazaar_loader.lua") then
                                 loader_script = [[local code=readfile("bazaar_loader.lua") local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) print("[QUEUE DEBUG] Code preview:",code:sub(1,200)) return end local s,runErr=pcall(fn) if not s then print("[QUEUE ERROR] Runtime failed:",runErr) print("[QUEUE DEBUG] Traceback:",debug.traceback()) end]]
                             else
-                                loader_script = [[if not game:IsLoaded() then game.Loaded:Wait() end task.wait(1) local s,code=pcall(function() return game:HttpGet("https://raw.githubusercontent.com/Salenware/HYDROXIDE/refs/heads/main/ROGUE/rogue_ui.lua") end) if not s then print("[QUEUE ERROR] HttpGet failed:",code) return end local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) print("[QUEUE DEBUG] Response preview:",tostring(code):sub(1,200)) return end local ok,runErr=pcall(fn) if not ok then print("[QUEUE ERROR] Runtime failed:",runErr) print("[QUEUE DEBUG] Traceback:",debug.traceback()) end]]
+                                loader_script = hxd_reexecute_script()
                             end
                             queue_func(loader_script)
                         end)
