@@ -1,4 +1,4 @@
-﻿-- // hydroxide.solutions PROPIETRARRY code?????
+-- // hydroxide.solutions PROPIETRARRY code?????
 -- // whoever reads this, https://www.youtube.com/watch?v=j50ZssEojtM this rap is lowk fire and i found it when i was trying to find rappers from Montana and this one just totally slaps!!! - baba zyu
 
 --[[
@@ -1162,7 +1162,7 @@ local success, err = xpcall(function()
         if not ok or not sock then return nil end
         return sock
     end
-    -- hide self from the map while botting: bot sets MemStorageService "botstarted" = "true"
+    -- hide self from the map while botting: bot sets MemStorageService "botstarted"/"blatant" = "true"
     local function bot_active()
         local ok, v = pcall(function()
             local mem = services.MemStorageService
