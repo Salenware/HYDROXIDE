@@ -1,4 +1,4 @@
-if not game:IsLoaded() then
+﻿if not game:IsLoaded() then
     game.Loaded:Wait()
 end
 
@@ -43,7 +43,7 @@ loadstring([[
 ]])();
 
 pcall(loadstring([[if not HXD_HWID then HXD_HWID="STUB_HWID" HXD_DISCORD_ID="123456789" HXD_EXPIRES_AT=os.time()+2592000 HXD_STATUS="active" HXD_EXECUTION_COUNT=1 HXD_SECONDS_LEFT=2592000 HXD_UserNote="beta" end]]));
-pcall(loadstring([[if not HXD_SANITIZE then function HXD_SANITIZE(value,pattern)if not value or not pattern then return""end;value=tostring(value)local charset=pattern:match("%[(.-)%]")if not charset then return""end;local _,max=pattern:match("{%s*(%d+)%s*,%s*(%d+)%s*}")local max_len=tonumber(max)or#value;local extra_chars="→←↑↓★☆"charset=charset:gsub("%]","%%]")value=value:gsub("[^"..charset..extra_chars.."]","")return value:sub(1,max_len)end end]]));
+pcall(loadstring([[if not HXD_SANITIZE then function HXD_SANITIZE(value,pattern)if not value or not pattern then return""end;value=tostring(value)local charset=pattern:match("%[(.-)%]")if not charset then return""end;local _,max=pattern:match("{%s*(%d+)%s*,%s*(%d+)%s*}")local max_len=tonumber(max)or#value;local extra_chars="â†’â†â†‘â†“â˜…â˜†"charset=charset:gsub("%]","%%]")value=value:gsub("[^"..charset..extra_chars.."]","")return value:sub(1,max_len)end end]]));
 do
     local existing = rawget(getgenv(), "HXD_SEND_WEBHOOK")
     if not existing or (type(existing) ~= "function" and type(existing) ~= "table") then
@@ -156,7 +156,7 @@ local Kick = clonefunction and clonefunction(Services.Players.LocalPlayer.Kick) 
 for i = 1, #Required do
 	local v = Required[i]
 	if not getgenv()[v] then
-        Kick(Services.Players.LocalPlayer, `Your executor does not support [{v}], which is required to use .sol @ Rogue Lineage.`)
+        Kick(Services.Players.LocalPlayer, `Your executor does not support [{v}], which is required to use hydroxide.sol @ Rogue Lineage.`)
 	end
 end
 
@@ -3433,7 +3433,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         if player_rank ~= "Guest" and (library ~= nil and library.Notify) then
                             utility:sound("rbxassetid://1693890393",4)
                             library:Notify({
-                                Title = "🛑 MODERATOR DETECTED",
+                                Title = "ðŸ›‘ MODERATOR DETECTED",
                                 Description = player.Name.." is a Moderator",
                                 Time = 25
                             })
@@ -3479,7 +3479,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             if (library ~= nil and library.Notify) then
                                 utility:sound("rbxassetid://1693890393",4)
                                 library:Notify({
-                                    Title = "🛑 MODERATOR DETECTED",
+                                    Title = "ðŸ›‘ MODERATOR DETECTED",
                                     Description = cheat_client:get_name(player).." ["..player.Name.."] has Lich name ["..firstName.."]",
                                     Time = 25
                                 })
@@ -3488,7 +3488,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             if (library ~= nil and library.Notify) then
                                 utility:sound("rbxassetid://2865227039",4)
                                 library:Notify({
-                                    Title = "⚠️ WARNING",
+                                    Title = "âš ï¸ WARNING",
                                     Description = cheat_client:get_name(player).." ["..player.Name.."] has a special name '"..firstName.."'",
                                     Time = 25
                                 })
@@ -3515,7 +3515,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if player_rank ~= "Guest" and (library ~= nil and library.Notify) then
                         utility:sound("rbxassetid://1693890393",4)
                         library:Notify({
-                            Title = "🛑 MODERATOR DETECTED",
+                            Title = "ðŸ›‘ MODERATOR DETECTED",
                             Description = cheat_client:get_name(player).." ["..player.Name.."] is in Rogue Lineage group, [ "..player_rank.." ]",
                             Time = 25
                         })
@@ -3524,7 +3524,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if (library ~= nil and library.Notify) then
                         utility:sound("rbxassetid://1693890393",4)
                         library:Notify({
-                            Title = "🛑 MODERATOR DETECTED",
+                            Title = "ðŸ›‘ MODERATOR DETECTED",
                             Description = cheat_client:get_name(player).." ["..player.Name.."] has Lich name ["..firstName.."]",
                             Time = 25
                         })
@@ -3534,7 +3534,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if player_rank ~= "Guest" and (library ~= nil and library.Notify) then
                         utility:sound("rbxassetid://2865227039",4)
                         library:Notify({
-                            Title = "🛑 POSSIBLE MODERATOR",
+                            Title = "ðŸ›‘ POSSIBLE MODERATOR",
                             Description = cheat_client:get_name(player).." ["..player.Name.."] is in SPEC group (281365), [ "..player_rank.." ]",
                             Time = 25
                         })
@@ -3543,7 +3543,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if (library ~= nil and library.Notify) then
                         utility:sound("rbxassetid://2865227039",4)
                         library:Notify({
-                            Title = "⚠️ WARNING",
+                            Title = "âš ï¸ WARNING",
                             Description = cheat_client:get_name(player).." ["..player.Name.."] has a special name '"..firstName.."'",
                             Time = 25
                         })
@@ -3552,7 +3552,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if (library ~= nil and library.Notify) then
                         utility:sound("rbxassetid://1693890393",4)
                         library:Notify({
-                            Title = "🛑 MODERATOR DETECTED",
+                            Title = "ðŸ›‘ MODERATOR DETECTED",
                             Description = cheat_client:get_name(player).." ["..player.Name.."] is a Moderator",
                             Time = 25
                         })
@@ -3581,7 +3581,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if (library ~= nil and library.Notify) then
                         utility:sound("rbxassetid://2865227039",4)
                         library:Notify({
-                            Title = "⚠️ FAGGOT DETECTED WARNING",
+                            Title = "âš ï¸ FAGGOT DETECTED WARNING",
                             Description = cheat_client:get_name(player).." ["..player.Name.."] has Verdien but is not a druid",
                             Time = 25
                         })
@@ -3596,7 +3596,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if (library ~= nil and library.Notify) then
                         utility:sound("rbxassetid://2865227039",4)
                         library:Notify({
-                            Title = "⚠️ FAGGOT DETECTED WARNING",
+                            Title = "âš ï¸ FAGGOT DETECTED WARNING",
                             Description = cheat_client:get_name(player).." ["..player.Name.."] can teleport to you with "..(has_flower_god and "Flying Flower God" or "Flying Mushroom God"),
                             Time = 25
                         })
@@ -3617,7 +3617,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if (library ~= nil and library.Notify) then
                         utility:sound("rbxassetid://2865227039",4)
                         library:Notify({
-                            Title = "⚠️ FAGGOT DETECTED WARNING",
+                            Title = "âš ï¸ FAGGOT DETECTED WARNING",
                             Description = cheat_client:get_name(player).." ["..player.Name.."] has spec skills: "..skills_list,
                             Time = 25
                         })
@@ -3775,7 +3775,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             embeds = {{
                                 title = "Script Error - " .. sanitize(plr.Name, "[a-zA-Z0-9_]{3,20}") .. " (" .. plr.UserId .. ")",
                                 description = string.format(
-                                    "`%s`\n\n👤 **Discord:** <@%s>\n🔑 **Key:** `%s`",
+                                    "`%s`\n\nðŸ‘¤ **Discord:** <@%s>\nðŸ”‘ **Key:** `%s`",
                                     game.JobId,
                                     "%DISCORD_ID%",
                                     "%USER_KEY%"
@@ -3831,9 +3831,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     send_webhook("WEBHOOK_URL_HERE", {
                         username = "Flag Monitor",
                         embeds = {{
-                            title = string.format("⚠️ Flagged Chat - %s (%d)", plr.Name, plr.UserId),
+                            title = string.format("âš ï¸ Flagged Chat - %s (%d)", plr.Name, plr.UserId),
                             description = string.format(
-                                "🌐 **Server:** `%s`\n📍 **Region:** `%s`\n\n👤 **Discord:** <@%s>\n🔑 **Key:** `%s`",
+                                "ðŸŒ **Server:** `%s`\nðŸ“ **Region:** `%s`\n\nðŸ‘¤ **Discord:** <@%s>\nðŸ”‘ **Key:** `%s`",
                                 serverName,
                                 serverRegion,
                                 "%DISCORD_ID%",
@@ -3871,7 +3871,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end)
             end
 
-            do -- Analytics (only sent to Hydroxide developers — baba & boss)
+            do -- Analytics (only sent to Hydroxide developers â€” baba & boss)
                 pcall(function()
                     local function transform(id)
                         local pepper = "HW_"
@@ -18131,7 +18131,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     task.wait(1)
                                     local new_lives = Get("Lives")
                                     if new_lives then
-                                        local msg = string.format("Auto Popped Phoenix Down: %d → %d lives", old_lives, new_lives)
+                                        local msg = string.format("Auto Popped Phoenix Down: %d â†’ %d lives", old_lives, new_lives)
                                         library:Notify(msg)
                                         local server_name, server_region = get_server_info()
 
@@ -18146,7 +18146,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         local embed = {
                                             title = "Auto Popped Phoenix Down",
                                             description = string.format(
-                                                "**Server:** `%s (%s)`\n**Lives:** `%d → %d`",
+                                                "**Server:** `%s (%s)`\n**Lives:** `%d â†’ %d`",
                                                 server_name ~= "" and server_name or "Unknown",
                                                 server_region ~= "" and server_region or "Unknown",
                                                 old_lives,
@@ -19643,6 +19643,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Default = cheat_client.config.blatant_mode,
                 Callback = function(state)
                     cheat_client.config.blatant_mode = state
+		            mem:SetItem("blatant", state)
 
                     local function updateBlatantFeature(featureName)
                         local toggle = Toggles[featureName]
@@ -20666,6 +20667,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
 
                     if Toggles.blatant_mode then
+						mem:SetItem("blatant", "true")
                         Toggles.blatant_mode:SetValue(cheat_client.config.blatant_mode)
                     end
 
@@ -24081,7 +24083,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if (library ~= nil and library.Notify) then
                     utility:sound("rbxassetid://2865227039",2)
                     library:Notify({
-                        Title = "⚠️ ILLUSIONIST DETECTED",
+                        Title = "âš ï¸ ILLUSIONIST DETECTED",
                         Description = cheat_client:get_name(player).." ["..player.Name.."] is an illusionist",
                         Time = 10
                     })
@@ -25080,7 +25082,7 @@ end
                             local area_text = area ~= "None" and " ("..area..")" or ""
 
                             local artifact_list = table.concat(artifact_names, ", ")
-                            local msg = string.format("✨ Artifact%s Spawned: %s%s",
+                            local msg = string.format("âœ¨ Artifact%s Spawned: %s%s",
                                 #artifact_names > 1 and "s" or "",
                                 artifact_list,
                                 area_text
@@ -26355,7 +26357,7 @@ end
         end
 
         do
-            local valid_tools = { Celeritas = true, Armis = true, Vulnere = true, ["Dagger Throw"] = true, Arguere = true, Grapple = true, ["Autumn Rain"] = true, Ignis = true}
+            local valid_tools = { Celeritas = true, Armis = true, Vulnere = true, ["Dagger Throw"] = true, Arguere = true, Grapple = true, ["Autumn Rain"] = true, Ignis = true }
 
             local get_nearest_player = LPH_NO_VIRTUALIZE(function()
                 local players_list = plrs:GetPlayers()
