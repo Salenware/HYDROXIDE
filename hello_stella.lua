@@ -1,4 +1,4 @@
--- // hydroxide.solutions PROPIETRARRY code?????
+﻿-- // hydroxide.solutions PROPIETRARRY code?????
 -- // whoever reads this, https://www.youtube.com/watch?v=j50ZssEojtM this rap is lowk fire and i found it when i was trying to find rappers from Montana and this one just totally slaps!!! - baba zyu
 
 --[[
@@ -46,16 +46,20 @@ end
 getgenv()[_key] = setmetatable({}, { __tostring = function() return "nil" end })
 local user_token = getgenv().stella_token
 local user_debug = getgenv().stella_debug or false
+local user_hide_self = getgenv().stella_hide_self -- nil = default (auto-hide while botting), true = always hide, false = never hide even when botting
 getgenv().stella_token = nil
 getgenv().stella_debug = nil
+getgenv().stella_hide_self = nil
 
 local success, err = xpcall(function()
     local config = {
         api_url = "https://stella.heroinhound.cc/api/bulk",
         api_token = user_token,
         send_interval = 35,       -- data payload sends
-        chat_flush_interval = 10, -- chat only flush
+        chat_flush_interval = 3, -- chat only flush
         api_fetch_interval = 300, -- seconds between Roblox API server list fetches
+        position_interval = 0.3,  -- live-map position stream (websocket)
+        hide_self = user_hide_self,
 
         debug = user_debug,
     }
@@ -81,13 +85,6 @@ local success, err = xpcall(function()
         end
     })
 
-    pcall(function()
-        if not getconnections then return end
-        for _, v in pairs(getconnections(services.ScriptContext.Error)) do
-            v:Disable()
-        end
-    end)
-
     local http_service = services.HttpService
     local players = services.Players
     local replicated_storage = services.ReplicatedStorage
@@ -98,6 +95,7 @@ local success, err = xpcall(function()
     local CHAT_BUFFER_MAX = 200
     local CHAT_TEXT_MAX = 200
     local chat_connected = setmetatable({}, { __mode = "k" })
+    local text_chat_active = false
 
     local function server_time_now()
         local ok, t = pcall(function() return workspace:GetServerTimeNow() end)
@@ -105,7 +103,7 @@ local success, err = xpcall(function()
         return os.time()
     end
 
-    local function record_chat(player, message)
+    local function record_chat(player, message, kind)
         if type(message) ~= "string" or message == "" then return end
         local text = message
         if #text > CHAT_TEXT_MAX then text = string.sub(text, 1, CHAT_TEXT_MAX) end
@@ -114,6 +112,7 @@ local success, err = xpcall(function()
             name = player.Name,
             text = text,
             t = server_time_now(),
+            k = kind or "say",
         }
         debug_info("print", "chat captured:", player.Name, "->", text, "(buffer", #chat_buffer .. ")")
         if #chat_buffer > CHAT_BUFFER_MAX then
@@ -126,17 +125,47 @@ local success, err = xpcall(function()
         chat_connected[player] = true
         local ok = pcall(function()
             player.Chatted:Connect(function(message)
-                pcall(record_chat, player, message)
+                if text_chat_active then return end
+                pcall(record_chat, player, message, "say")
             end)
         end)
         if not ok then chat_connected[player] = nil end
     end
 
     local function init_chat_capture()
+        pcall(function()
+            local tcs = game:GetService("TextChatService")
+            if tcs.ChatVersion ~= Enum.ChatVersion.TextChatService then return end
+            text_chat_active = true
+            tcs.MessageReceived:Connect(function(message)
+                pcall(function()
+                    local source = message.TextSource
+                    if not source then return end
+                    local speaker = players:GetPlayerByUserId(source.UserId)
+                    if not speaker then return end
+                    local channel = (message.TextChannel and message.TextChannel.Name) or ""
+                    local kind = (type(channel) == "string" and string.sub(channel, 1, 10) == "RBXWhisper") and "whisper" or "say"
+                    record_chat(speaker, message.Text, kind)
+                end)
+            end)
+        end)
+
         for _, player in ipairs(players:GetPlayers()) do
             hook_player_chat(player)
         end
         players.PlayerAdded:Connect(hook_player_chat)
+
+        -- game.Chat:Chat()
+        pcall(function()
+            services.Chat.Chatted:Connect(function(part, message)
+                pcall(function()
+                    if typeof(part) ~= "Instance" then return end
+                    local character = part:IsA("Model") and part or part:FindFirstAncestorOfClass("Model")
+                    local speaker = character and players:GetPlayerFromCharacter(character)
+                    if speaker then record_chat(speaker, message, "gate") end
+                end)
+            end)
+        end)
     end
 
     local race_colors = {}
@@ -156,6 +185,7 @@ local success, err = xpcall(function()
         ["Vagrant Soul"] = "Lich",
         ["Emulate"] = "LesserNavaran",
         ["Jack"] = "Navaran",
+        ["Angel Fall"] = "Seraph",
         ["Respirare"] = "Kasparan",
         ["Repair"] = "Gaian",
         ["Galvanize"] = "Construct",
@@ -445,6 +475,24 @@ local success, err = xpcall(function()
         return color
     end
 
+    local function get_player_mana(player)
+        local container = player.Character
+        if not container then
+            local live = workspace:FindFirstChild("Live")
+            container = live and live:FindFirstChild(player.Name)
+        end
+        if not container then return nil end
+
+        local abilities = container:FindFirstChild("ManaAbilities")
+        local sprint = abilities and abilities:FindFirstChild("ManaSprint")
+        if not sprint then return nil end
+
+        local success, color = pcall(function() return tostring(sprint.Value) end)
+        if not success then return nil end
+
+        return color
+    end
+
     local function get_player_attr(player, attr_name)
         if game.PlaceId == 3541987450 then
             local success, result = pcall(function()
@@ -574,30 +622,23 @@ local success, err = xpcall(function()
         return success and result or nil
     end
 
+    -- Blessings folder only exists in Khei (3541987450), not Gaia; absent on a loaded character => "" so the backend clears stale blessings (wiped players back in Gaia)
     local function get_player_blessings(player)
-        if game.PlaceId ~= 3541987450 then
-            return nil
-        end
+        local character = player.Character
+        if not character then return nil end
 
         local success, result = pcall(function()
-            if not player.Character then return nil end
-            local blessings_folder = player.Character:FindFirstChild("Blessings")
-            if not blessings_folder then return nil end
+            local blessings_folder = character:FindFirstChild("Blessings")
+            if not blessings_folder then return "" end
 
-            local blessing_names = {}
+            local names = {}
             for _, blessing in pairs(blessings_folder:GetChildren()) do
-                table.insert(blessing_names, blessing.Name)
+                table.insert(names, blessing.Name)
             end
-
-            if #blessing_names > 0 then
-                return table.concat(blessing_names, ", ")
-            end
-            return nil
+            return table.concat(names, ", ")
         end)
 
-        if success then
-            return result
-        end
+        if success then return result end
         return nil
     end
 
@@ -635,12 +676,86 @@ local success, err = xpcall(function()
         return nil
     end
 
+    local function resolve_character(player)
+        local character = player.Character
+        if not character then
+            local live = workspace:FindFirstChild("Live")
+            character = live and live:FindFirstChild(player.Name)
+        end
+        return character
+    end
+
+    local function get_weapon_part(character)
+        local torso = character and character:FindFirstChild("Torso")
+        if not torso then return nil end
+        -- every weapon MeshPart holds a Prop accessory (not all have Stats); one weapon can be several, take the first
+        for _, child in ipairs(torso:GetChildren()) do
+            if child:IsA("MeshPart") and child:FindFirstChild("Prop") then
+                return child
+            end
+        end
+        return nil
+    end
+
+    local function get_player_weapon(player)
+        local weapon = get_weapon_part(resolve_character(player))
+        return weapon and weapon.Name or nil
+    end
+
+    -- gem enchant colours are the RGB of the weapon's EnchantEffect ParticleEmitter (Color3, 0-1)
+    local enchant_gems = {
+        { "Ruby", Color3.new(0.811765, 0.196078, 0.207843) },
+        { "Opal", Color3.new(0.423529, 0.811765, 0.00784314) },
+        { "Emerald", Color3.new(0.270588, 1, 0.145098) },
+        { "Sapphire", Color3.new(0.0784314, 0.8, 0.811765) },
+        { "Diamond", Color3.new(0, 0.533333, 1) },
+        { "Night Stone", Color3.new(0.298039, 0.137255, 0.435294) },
+    }
+
+    local function match_enchant_gem(emitter)
+        local ok, color = pcall(function() return emitter.Color.Keypoints[1].Value end)
+        if not ok or not color then return nil end
+        for _, gem in ipairs(enchant_gems) do
+            if colors_match(color, gem[2], 0.03) then return gem[1] end
+        end
+        return nil
+    end
+
+    local function get_player_enchants(player)
+        local weapon = get_weapon_part(resolve_character(player))
+        if not weapon then return nil end
+        local gems, seen = {}, {}
+        for _, child in ipairs(weapon:GetChildren()) do
+            if child:IsA("ParticleEmitter") and child.Name == "EnchantEffect" then
+                local gem = match_enchant_gem(child)
+                if gem and not seen[gem] then
+                    seen[gem] = true
+                    gems[#gems + 1] = gem
+                end
+            end
+        end
+        if #gems == 0 then return nil end
+        return table.concat(gems, ", ")
+    end
+
+    local function get_player_metal_arm(player)
+        local character = resolve_character(player)
+        if not character then return nil end
+        return character:FindFirstChild("ArmPlate", true) ~= nil
+    end
+
     local function get_player_data(player)
         local character = player.Character
 
         local first_name = get_player_name(player)
         if first_name == "Unknown" then
             return nil -- Skip player, attributes not loaded yet
+        end
+
+        local max_edict = nil
+        do
+            local ok, val = pcall(function() return player:GetAttribute("MaxEdict") end)
+            if ok and type(val) == "boolean" then max_edict = val end
         end
 
         local data = {
@@ -652,6 +767,7 @@ local success, err = xpcall(function()
             lord_status = get_lord_status(player),
             location = game.JobId,
             last_position = get_location_name(player),
+            max_edict = max_edict,
         }
 
         if character then
@@ -661,8 +777,12 @@ local success, err = xpcall(function()
             data.face = get_player_face(player)
             data.artifacts = get_player_artifact(player)
             data.dye = get_player_dye(player)
+            data.mana = get_player_mana(player)
             data.blessings = get_player_blessings(player)
             data.outfit = get_player_outfit(player)
+            data.weapon = get_player_weapon(player)
+            data.metal_arm = get_player_metal_arm(player)
+            data.enchants = get_player_enchants(player)
         end
 
         return data
@@ -791,6 +911,28 @@ local success, err = xpcall(function()
         return api_servers
     end
 
+    local LOOT_ZONE_TRIGGERS = { "CastleRockSnake", "evileye2", "CryptTrigger", "MazeSnakes" }
+
+    -- LastSpawned epoch per loot zone for THIS server only (workspace is local); nil off-map. keyed by trigger, backend maps labels
+    local function get_loot_zones()
+        local spawns = workspace:FindFirstChild("MonsterSpawns")
+        local triggers = spawns and spawns:FindFirstChild("Triggers")
+        if not triggers then return nil end
+        local out = nil
+        for _, trigger in ipairs(LOOT_ZONE_TRIGGERS) do
+            local node = triggers:FindFirstChild(trigger)
+            local stamp = node and node:FindFirstChild("LastSpawned")
+            if stamp then
+                local ok, val = pcall(function() return stamp.Value end)
+                if ok and type(val) == "number" and val > 0 then
+                    out = out or {}
+                    out[trigger] = val
+                end
+            end
+        end
+        return out
+    end
+
     local function collect_all_data()
         local player_list = {}
         local current_player_list = {}
@@ -818,10 +960,12 @@ local success, err = xpcall(function()
         end
 
         local current_job_id = game.JobId
+        local loot_zones = get_loot_zones()
         local found_current = false
         for _, server in ipairs(servers) do
             if server.job_id == current_job_id then
                 server.players = current_player_list
+                server.loot_zones = loot_zones
                 found_current = true
                 break
             end
@@ -866,6 +1010,7 @@ local success, err = xpcall(function()
                 region = region,
                 version = version,
                 is_public = false,
+                loot_zones = loot_zones,
             })
         end
         
@@ -949,8 +1094,10 @@ local success, err = xpcall(function()
         end
     end
 
-    local function send_player_leave(roblox_id)
-        signed_post(config.api_url:gsub("/bulk$", "/player/leave"), { roblox_id = roblox_id }, "Player leave")
+    local function send_player_leave(roblox_id, job_id)
+        local body = { roblox_id = roblox_id }
+        if job_id then body.job_id = job_id end
+        signed_post(config.api_url:gsub("/bulk$", "/player/leave"), body, "Player leave")
     end
 
     local function send_batch_player_leave(roblox_ids, job_id)
@@ -982,6 +1129,98 @@ local success, err = xpcall(function()
     end
 
     task.spawn(main)
+
+    local ws_url = config.api_url:gsub("^http", "ws"):gsub("/bulk$", "/ws/positions") .. "?token=" .. config.api_token
+        .. "&rid=" .. tostring(players.LocalPlayer and players.LocalPlayer.UserId or 0)
+    local positions_url = config.api_url:gsub("/bulk$", "/positions")
+    local function gather_positions()
+        local list = {}
+        for _, plr in ipairs(players:GetPlayers()) do
+            local char = plr.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                local p = hrp.Position
+                list[#list + 1] = {
+                    id = plr.UserId, name = plr.Name,
+                    x = math.floor(p.X), y = math.floor(p.Y), z = math.floor(p.Z),
+                    hp = hum and math.floor(hum.Health) or nil,
+                    maxhp = hum and math.floor(hum.MaxHealth) or nil,
+                }
+            end
+        end
+        return list
+    end
+    local function ws_api()
+        return (syn and syn.websocket and syn.websocket.connect)
+            or (WebSocket and WebSocket.connect) or (websocket and websocket.connect)
+    end
+    local function ws_open()
+        local connect = ws_api()
+        if not connect then return nil end
+        local ok, sock = pcall(connect, ws_url)
+        if not ok or not sock then return nil end
+        return sock
+    end
+    -- hide self from the map while botting: bot sets MemStorageService "botstarted" = "true"
+    local function bot_active()
+        local ok, v = pcall(function()
+            local mem = services.MemStorageService
+            local function flag(key) return mem:HasItem(key) and mem:GetItem(key) == "true" end
+            return flag("botstarted")
+        end)
+        return ok and v == true
+    end
+    task.spawn(function()
+        local priv = false
+        pcall(function()
+            local stype = replicated_storage:WaitForChild("ServerType", 10)
+            if stype and stype.Value == "Private" then priv = true end
+        end)
+        if priv then return end
+        local ws
+        local healthy_at
+        local mode = "http"
+        local next_try = 0
+        while true do
+            local now = os.time()
+            local list = gather_positions()
+
+            if not ws and ws_api() and now >= next_try then
+                ws = ws_open(); next_try = now + 3
+                if ws then
+                    healthy_at = now
+                    local sock = ws
+                    if sock.OnClose then
+                        pcall(function() sock.OnClose:Connect(function()
+                            if ws == sock then ws = nil; healthy_at = nil end
+                        end) end)
+                    end
+                end
+            end
+
+            if ws and mode ~= "ws" and healthy_at and now - healthy_at >= 2 then
+                mode = "ws"; debug_info("print", "positions over websocket")
+            elseif not ws and mode == "ws" then
+                mode = "http"; debug_info("warn", "websocket lost, positions over http")
+            end
+
+            if #list > 0 then
+                local frame = { job_id = game.JobId, players = list, count = #players:GetPlayers(), place = game.PlaceId }
+                local me = players.LocalPlayer
+                -- true = always hide; false = never (even botting); nil = auto-hide only while botting
+                if me and (config.hide_self == true or (config.hide_self ~= false and bot_active())) then frame.me = me.UserId end
+                if ws and mode == "ws" then
+                    local ok = pcall(function() ws:Send(http_service:JSONEncode(frame)) end)
+                    if not ok then pcall(function() ws:Close() end); ws = nil; healthy_at = nil; mode = "http" end
+                else
+                    pcall(signed_post, positions_url, frame, "Positions")
+                end
+            end
+
+            task.wait(mode == "ws" and config.position_interval or 0.6)
+        end
+    end)
 
     task.spawn(function()
         while true do
@@ -1036,8 +1275,9 @@ local success, err = xpcall(function()
             -- Normal single player departure (skip if server is shutting down)
             if server_leaving then return end
             local uid = player.UserId
+            local left_job_id = game.JobId
             task.spawn(function()
-                pcall(send_player_leave, uid)
+                pcall(send_player_leave, uid, left_job_id)
             end)
             task.wait(1)
             send_payload(collect_all_data())
