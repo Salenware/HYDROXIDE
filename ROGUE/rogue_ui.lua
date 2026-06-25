@@ -26743,7 +26743,7 @@ end
 
                         local isHoldingSpace = cheat_client.custom_flight_functions["IsKeyDown"](uis, "Space")
                         if isHoldingSpace then eVector += uVector end
-                        if cheat_client.custom_flight_functions["IsKeyDown"](uis, "LeftShift") then eVector -= uVector end
+                        if cheat_client.custom_flight_functions["IsKeyDown"](uis, "LeftControl") then eVector -= uVector end
 
                         local isMovingDown = cheat_client.custom_flight_functions["IsKeyDown"](uis, "LeftShift")
                         if not isMovingDown and rootPart.AssemblyLinearVelocity.Y < 0 then
