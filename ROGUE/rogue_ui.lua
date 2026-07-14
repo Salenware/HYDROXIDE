@@ -13435,6 +13435,39 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 local serverhop_success = false
+                local function retry_serverhop_forever(reason)
+                    local retry_count = 0
+
+                    while true do
+                        if shared and shared.is_unloading then
+                            return false
+                        end
+
+                        if mem:HasItem("botstarted") and mem:GetItem("botstarted") ~= "true" then
+                            return false
+                        end
+
+                        retry_count += 1
+                        library:Notify(string.format("Serverhop retry #%d - %s", retry_count, reason or "retrying"))
+
+                        if utility and (retry_count == 1 or retry_count % 10 == 0) then
+                            utility:plain_webhook(string.format("Serverhop retry #%d - %s", retry_count, reason or "retrying"))
+                        end
+
+                        pcall(function()
+                            rps.Requests.ReturnToMenu:InvokeServer()
+                        end)
+
+                        task.wait(2)
+
+                        if utility:Serverhop() then
+                            return true
+                        end
+
+                        task.wait(3)
+                    end
+                end
+
                 if InAir() then
                     serverhop_success = utility:Serverhop()
                 else
@@ -13491,20 +13524,18 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                             local final_serverhop = utility:Serverhop()
                             if not final_serverhop then
-                                library:Notify("!! SERVERHOP STILL FAILED after danger cleared - kicking !!")
-                                utility:plain_webhook("@here SERVERHOP FAILED even after danger cleared - kicking for safety")
-                                task.wait(0.5)
-                                plr:Kick("Serverhop failed after danger cleared - Kicked for safety.")
+                                library:Notify("!! SERVERHOP STILL FAILED after danger cleared - retrying forever !!")
+                                utility:plain_webhook("@here SERVERHOP FAILED even after danger cleared - retrying forever")
+                                retry_serverhop_forever("failed after danger cleared")
                             end
                             return
                         end
 
-                        library:Notify("!! SERVERHOP RETRY FAILED - kicking for safety !!")
+                        library:Notify("!! SERVERHOP RETRY FAILED - retrying forever !!")
                         if utility then
-                            utility:plain_webhook("@here SERVERHOP RETRY FAILED - kicking for safety")
+                            utility:plain_webhook("@here SERVERHOP RETRY FAILED - retrying forever")
                         end
-                        task.wait(0.5)
-                        plr:Kick("Serverhop failed after retry - Kicked for safety.")
+                        retry_serverhop_forever("retry failed")
                     end
                 end
             end
@@ -13701,6 +13732,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             local currently_dropping = false
             local droppedTools = {}
+            local queuedDropTools = {}
+            local useOnlyItems = {
+                ["Idol of War"] = true,
+            }
 
             local function ExecutePath(test_mode)
                 if not cheat_client or not cheat_client.config then
@@ -13711,6 +13746,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 trinket_bot.test_mode = test_mode
 
                 droppedTools = {}
+                queuedDropTools = {}
                 currently_dropping = false
 
                 local serverhop_count = 0
@@ -16749,7 +16785,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     "Phoenix Down",
                     "Scroll of Trahere",
                     "Scroll of Telorum",
-                    "Scroll of Sraunus"
+                    "Scroll of Sraunus",
+                    "Idol of War"
                 },
                 Multi = true,
                 Default = 1,
@@ -18199,6 +18236,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if not plr.Character or not plr.Character:FindFirstChild("Humanoid") then
                     return
                 end
+                local is_use_only_item = useOnlyItems[item.Name] == true
 
                 while currently_dropping do
                     task.wait(0.1)
@@ -18210,7 +18248,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return
                 end
 
-                if droppedTools[item.Name] then
+                if droppedTools[item.Name] and not is_use_only_item then
                     currently_dropping = false
                     return
                 end
@@ -18236,7 +18274,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if character and character:FindFirstChild("Humanoid") then
                         local is_scroll = item.Name:lower():find("scroll of") ~= nil
                         local is_ice_essence = item.Name == "Ice Essence"
-                        local should_try_use = is_scroll or is_ice_essence
+                        local should_try_use = is_scroll or is_ice_essence or is_use_only_item
 
                         local equip_success = pcall(function()
                             character.Humanoid:EquipTool(item)
@@ -18263,21 +18301,63 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
 
                         if should_try_use then
-                            library:Notify(string.format("Attempting to use %s before dropping...", item.Name))
+                            library:Notify(string.format("Attempting to use %s...", item.Name))
                             task.wait(0.1)
 
-                            task.spawn(function()
-                                if vim then
-                                    vim:SendMouseButtonEvent(0, 0, 0, true, game, 1)
-                                    task.wait(math.random(1, 15) / 1000)
-                                    vim:SendMouseButtonEvent(0, 0, 0, false, game, 1)
-                                end
-                            end)
+                            local function use_equipped_item()
+                                task.spawn(function()
+                                    if vim then
+                                        vim:SendMouseButtonEvent(0, 0, 0, true, game, 1)
+                                        task.wait(math.random(1, 15) / 1000)
+                                        vim:SendMouseButtonEvent(0, 0, 0, false, game, 1)
+                                    end
+                                end)
 
-                            if utility and utility.LeftClick then
-                                utility:LeftClick()
+                                if utility and utility.LeftClick then
+                                    utility:LeftClick()
+                                end
                             end
 
+                            if is_use_only_item then
+                                while item and item.Parent and (item.Parent == character or item.Parent == plr.Backpack) do
+                                    if not (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true") then
+                                        break
+                                    end
+
+                                    character = plr.Character
+                                    if not character or not character:FindFirstChild("Humanoid") then
+                                        break
+                                    end
+
+                                    if item.Parent == plr.Backpack then
+                                        pcall(function()
+                                            character.Humanoid:EquipTool(item)
+                                        end)
+
+                                        local equip_start = tick()
+                                        while item.Parent ~= character and item.Parent == plr.Backpack and (tick() - equip_start) < 3 do
+                                            task.wait(0.1)
+                                        end
+                                    end
+
+                                    if item.Parent ~= character then
+                                        break
+                                    end
+
+                                    use_equipped_item()
+                                    task.wait(0.45)
+                                end
+
+                                if not item or not item.Parent or (item.Parent ~= character and item.Parent ~= plr.Backpack) then
+                                    library:Notify(string.format("Used all %s", item.Name))
+                                end
+
+                                droppedTools[item.Name] = nil
+                                currently_dropping = false
+                                return
+                            end
+
+                            use_equipped_item()
                             task.wait(0.5)
 
                             if not item or not item.Parent or (item.Parent ~= character and item.Parent ~= plr.Backpack) then
@@ -18361,8 +18441,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     for _, item in ipairs(backpack:GetChildren()) do
                         if item then
                             local success, is_tool = pcall(function() return item:IsA("Tool") end)
-                            if success and is_tool and not droppedTools[item.Name] then
-                                task.spawn(drop_item, item)
+                            local is_use_only_item = success and is_tool and useOnlyItems[item.Name] == true
+                            if success and is_tool and not queuedDropTools[item] and (is_use_only_item or not droppedTools[item.Name]) then
+                                queuedDropTools[item] = true
+                                task.spawn(function()
+                                    drop_item(item)
+                                    queuedDropTools[item] = nil
+                                end)
                             end
                         end
                     end
