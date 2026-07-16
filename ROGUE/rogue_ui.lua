@@ -14640,7 +14640,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         plr:Kick("bot died")
                                     else
                                         pcall(function() utility:plain_webhook("@here bot died without ctag, server hopping") end)
-                                        task.wait(10)
+                                        task.wait(15)
                                         TrinketBotServerhop("bot died without ctag, server hopping")
                                     end
                                 end)
