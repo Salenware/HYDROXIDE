@@ -13060,6 +13060,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return false
                 end
 
+                if not trinket_bot.madrasian_initial_setup_ready then
+                    return false
+                end
+
                 if shared.is_unloading or trinket_bot.gate_in_progress or emergency_gate_requested or trinket_bot.moderator_detected then
                     return false
                 end
@@ -14518,6 +14522,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 trinket_bot.madrasian_normal_shift_verified = false
                 trinket_bot.last_madrasian_shift_action = 0
                 trinket_bot.madrasian_shift_retry_at = 0
+                trinket_bot.madrasian_initial_setup_ready = false
 
                 if not plr.Character or not FindFirstChild(plr.Character, "HumanoidRootPart") then
                     trinket_bot.path_running = false
@@ -14684,8 +14689,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         handle_moderator_detection(player)
                     end
                 end))
-
-                start_madrasian_shift_setup()
 
                 local glassmask_connection, glassmask_thrown_connection
                 local fimbul_escape_in_progress = false
@@ -15362,6 +15365,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         task.wait(0.5)
                     end
                 end
+
+                trinket_bot.madrasian_initial_setup_ready = true
+                start_madrasian_shift_setup()
 
                 local i = 1
                 while i <= #trinket_bot.path_points do
