@@ -13737,6 +13737,38 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 ["Idol of War"] = true,
             }
 
+            local function start_wake_me_up_loop()
+                if trinket_bot.wake_me_up_loop_running then
+                    return
+                end
+
+                trinket_bot.wake_me_up_loop_running = true
+
+                task.spawn(function()
+                    while true do
+                        if shared and shared.is_unloading then
+                            break
+                        end
+
+                        if not (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true") then
+                            break
+                        end
+
+                        pcall(function()
+                            local requests = rps and FindFirstChild(rps, "Requests")
+                            local wake_remote = requests and FindFirstChild(requests, "WAKEMEUPINSIDE")
+                            if wake_remote then
+                                wake_remote:FireServer(plr)
+                            end
+                        end)
+
+                        task.wait(5)
+                    end
+
+                    trinket_bot.wake_me_up_loop_running = false
+                end)
+            end
+
             local function ExecutePath(test_mode)
                 if not cheat_client or not cheat_client.config then
                     return
@@ -13875,6 +13907,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 if not test_mode then
                     mem:SetItem("botstarted", "true")
+                    start_wake_me_up_loop()
+
                     if not mem:HasItem("serverhop_count") then
                         mem:SetItem("serverhop_count", "0")
                     end
@@ -13913,9 +13947,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 pcall(function() utility:plain_webhook("@here bot died (stay in server mode)") end)
                             else
                                 task.spawn(function()
-                                    pcall(function() utility:plain_webhook("@everyone bot died - kicking") end)
-                                    task.wait(0.3)
-                                    plr:Kick("bot died")
+                                    local died_with_danger = plr.Character and cs:HasTag(plr.Character, "Danger")
+                                    if died_with_danger then
+                                        pcall(function() utility:plain_webhook("@everyone bot died with ctag - kicking") end)
+                                        task.wait(0.3)
+                                        plr:Kick("bot died")
+                                    else
+                                        pcall(function() utility:plain_webhook("@here bot died without ctag, server hopping") end)
+                                        TrinketBotServerhop("bot died without ctag, server hopping")
+                                    end
                                 end)
                             end
                         end))
@@ -16996,6 +17036,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             task.spawn(function()
                 if mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true" then
+                    start_wake_me_up_loop()
                     task.wait(2)
 
                     trinket_bot.path_running = false
