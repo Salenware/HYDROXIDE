@@ -626,10 +626,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             show_bag_range = false,
             bag_range = 80,
             reequip_gate_in_loop = true,
+            shifting_bot = false,
+            hold_perflora_when_botting = true,
 
 
             temperature_lock = false,
             textures = false,
+            disable_beds_khei = false,
             no_fall = false,
             no_killbrick = false,
             no_mob_trigger = false,
@@ -2468,14 +2471,20 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             end
 
-            function utility:charge_mana_until(amount)
+            function utility:charge_mana_until(amount, timeout, should_abort)
                 local character = plr.Character
                 if not character or FindFirstChildWhichIsA(character, 'ForceField') or not can_use_mana() then
-                    return warn('mana unavailable', can_use_mana())
+                    warn('mana unavailable', can_use_mana())
+                    return false
                 end
 
                 local mana = FindFirstChild(character, 'Mana')
-                if not mana then return end
+                if not mana then return false end
+
+                local target = math.clamp(amount, 0, 98)
+                local charge_started = tick()
+                local last_progress = charge_started
+                local last_mana = mana.Value
 
                 if FindFirstChild(character, 'Charge') then
                     utility:decharge_mana()
@@ -2484,12 +2493,29 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
 
-                while utility and shared and not shared.is_unloading and mana.Value < math.clamp(amount, 0, 98) do
+                while utility and shared and not shared.is_unloading and mana.Value < target do
+                    if should_abort and should_abort() then
+                        break
+                    end
+
+                    if timeout and (tick() - charge_started >= timeout or tick() - last_progress >= 4) then
+                        break
+                    end
+
+                    if timeout and not can_use_mana() then
+                        break
+                    end
+
                     utility:charge_mana()
                     if Toggles.SnapTrain and Toggles.SnapTrain.Value then
                         adjusted_wait(0.03, 0.5)
                     else
                         adjusted_wait(0.1, 1.2)
+                    end
+
+                    if mana.Value > last_mana then
+                        last_mana = mana.Value
+                        last_progress = tick()
                     end
                 end
 
@@ -2499,6 +2525,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         adjusted_wait(0.3, 1.0)
                     end
                 end
+
+                return mana.Value >= target
             end
         end
 
@@ -9406,6 +9434,100 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 })
             end
 
+            if game.PlaceId == 3541987450 then
+                local function is_bed_touch_part(instance)
+                    if not instance or not instance:IsA("BasePart") then
+                        return false
+                    end
+
+                    if instance.Name == "Bed" then
+                        return true
+                    end
+
+                    local model = instance:FindFirstAncestorOfClass("Model")
+                    return model and model.Name == "Bed1"
+                end
+
+                local function disable_bed_touch_part(part)
+                    cheat_client.disabled_bed_touch_parts = cheat_client.disabled_bed_touch_parts or {}
+
+                    if cheat_client.disabled_bed_touch_parts[part] == nil then
+                        cheat_client.disabled_bed_touch_parts[part] = part.CanTouch
+                    end
+
+                    part.CanTouch = false
+                end
+
+                cheat_client.start_bed_touch_guard = function()
+                    cheat_client.disabled_bed_touch_parts = cheat_client.disabled_bed_touch_parts or {}
+
+                    for _, instance in ipairs(workspace:GetDescendants()) do
+                        if is_bed_touch_part(instance) then
+                            pcall(disable_bed_touch_part, instance)
+                        end
+                    end
+
+                    if cheat_client.bed_touch_guard_connection then
+                        return
+                    end
+
+                    cheat_client.bed_touch_guard_connection = utility:Connection(workspace.DescendantAdded, function(instance)
+                        if Toggles and Toggles.disable_beds_khei and not Toggles.disable_beds_khei.Value then
+                            return
+                        end
+
+                        if is_bed_touch_part(instance) then
+                            pcall(disable_bed_touch_part, instance)
+                        end
+                    end)
+                end
+
+                cheat_client.restore_bed_touch_guard = function()
+                    if cheat_client.bed_touch_guard_connection then
+                        pcall(function()
+                            cheat_client.bed_touch_guard_connection:Disconnect()
+                        end)
+                        cheat_client.bed_touch_guard_connection = nil
+                    end
+
+                    if cheat_client.disabled_bed_touch_parts then
+                        for part, can_touch in pairs(cheat_client.disabled_bed_touch_parts) do
+                            if part and part.Parent then
+                                pcall(function()
+                                    part.CanTouch = can_touch
+                                end)
+                            end
+                        end
+                    end
+
+                    cheat_client.disabled_bed_touch_parts = {}
+                end
+
+                group_world:AddToggle("disable_beds_khei", {
+                    Text = "Disable beds (Khei)",
+                    Default = cheat_client.config.disable_beds_khei,
+                    Callback = function(state)
+                        local bot_started = mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
+                        if not state and bot_started then
+                            task.defer(function()
+                                if Toggles and Toggles.disable_beds_khei then
+                                    Toggles.disable_beds_khei:SetValue(true)
+                                end
+                            end)
+                            return
+                        end
+
+                        cheat_client.config.disable_beds_khei = state
+
+                        if state then
+                            cheat_client.start_bed_touch_guard()
+                        else
+                            cheat_client.restore_bed_touch_guard()
+                        end
+                    end
+                })
+            end
+
             group_world:AddDivider()
 
             do
@@ -12519,6 +12641,513 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return summary
             end
 
+            local currently_dropping = false
+            local idle_bait_tool_names = {"Perflora", "Pebble"}
+            local last_idle_bait_equip = 0
+
+            local function get_idle_bait_tool()
+                local character = plr.Character
+                local backpack = FindFirstChild(plr, "Backpack")
+
+                for _, tool_name in ipairs(idle_bait_tool_names) do
+                    local tool = character and FindFirstChild(character, tool_name)
+                    if tool and tool:IsA("Tool") then
+                        return tool
+                    end
+
+                    tool = backpack and FindFirstChild(backpack, tool_name)
+                    if tool and tool:IsA("Tool") then
+                        return tool
+                    end
+                end
+            end
+
+            local function is_idle_bait_tool(tool)
+                if not tool or not tool:IsA("Tool") then
+                    return false
+                end
+
+                for _, tool_name in ipairs(idle_bait_tool_names) do
+                    if tool.Name == tool_name then
+                        return true
+                    end
+                end
+
+                return false
+            end
+
+            local function is_madrasian_shift_tool(tool)
+                return tool
+                    and tool:IsA("Tool")
+                    and (tool.Name == "Shift" or tool.Name == "Trinket Shift")
+            end
+
+            local function is_selected_auto_drop_tool(tool)
+                if not tool or not tool:IsA("Tool") then
+                    return false
+                end
+
+                if is_idle_bait_tool(tool) then
+                    return false
+                end
+
+                local selected_items = Options.AutoDropItems and Options.AutoDropItems.Value
+                if not selected_items then
+                    return false
+                end
+
+                local tool_name = tool.Name:gsub(" ", "")
+                for selected_name, enabled in pairs(selected_items) do
+                    if enabled and tool_name == selected_name:gsub(" ", "") then
+                        return true
+                    end
+                end
+
+                return false
+            end
+
+            local function has_pending_auto_drop_tool()
+                local character = plr.Character
+                local backpack = plr.Backpack
+
+                if character then
+                    for _, item in ipairs(character:GetChildren()) do
+                        if is_selected_auto_drop_tool(item) then
+                            return true
+                        end
+                    end
+                end
+
+                if backpack then
+                    for _, item in ipairs(backpack:GetChildren()) do
+                        if is_selected_auto_drop_tool(item) then
+                            return true
+                        end
+                    end
+                end
+
+                return false
+            end
+
+            local function is_shifting_bot_enabled()
+                return game.PlaceId == 5208655184
+                    and Toggles
+                    and Toggles.ShiftingBot
+                    and Toggles.ShiftingBot.Value == true
+            end
+
+            local function get_bot_tool(tool_name)
+                local character = plr.Character
+                local backpack = FindFirstChild(plr, "Backpack")
+
+                local tool = character and FindFirstChild(character, tool_name)
+                if tool and tool:IsA("Tool") then
+                    return tool
+                end
+
+                tool = backpack and FindFirstChild(backpack, tool_name)
+                if tool and tool:IsA("Tool") then
+                    return tool
+                end
+            end
+
+            local function is_madrasian_shift_available()
+                return is_shifting_bot_enabled() and (get_bot_tool("Shift") or get_bot_tool("Trinket Shift")) ~= nil
+            end
+
+            local function is_trinket_shifted()
+                local character = plr.Character
+                return character and FindFirstChild(character, "TrinketShiftTrinket") ~= nil
+            end
+
+            local function notify_madrasian_shift(message)
+                pcall(function()
+                    if library and library.Notify then
+                        library:Notify("[Shifting bot] " .. message)
+                    end
+                end)
+            end
+
+            local function get_madrasian_fake_model_name()
+                local character = plr.Character
+                if not character then
+                    return nil
+                end
+
+                for _, child in ipairs(character:GetChildren()) do
+                    if child:IsA("Model") and FindFirstChild(child, "FakeHumanoid", true) then
+                        return child.Name
+                    end
+                end
+
+                return nil
+            end
+
+            local function wait_for_madrasian_fake_model_change(previous_name, timeout)
+                local start_time = tick()
+                timeout = timeout or 4
+
+                while tick() - start_time < timeout and trinket_bot.path_running do
+                    local current_name = get_madrasian_fake_model_name()
+                    if current_name and current_name ~= previous_name then
+                        return current_name
+                    end
+
+                    task.wait(0.1)
+                end
+
+                return nil
+            end
+
+            local function get_random_shift_target()
+                local candidates = {}
+
+                for _, target_player in ipairs(plrs:GetPlayers()) do
+                    if target_player ~= plr and target_player.Character then
+                        local character = target_player.Character
+                        local humanoid = FindFirstChildOfClass(character, "Humanoid")
+                        local target_part = FindFirstChild(character, "HumanoidRootPart")
+                            or FindFirstChild(character, "Torso")
+                            or FindFirstChild(character, "Head")
+
+                        if target_part and target_part:IsA("BasePart") and (not humanoid or humanoid.Health > 0) then
+                            candidates[#candidates + 1] = {
+                                part = target_part,
+                                player = target_player
+                            }
+                        end
+                    end
+                end
+
+                if #candidates == 0 then
+                    return nil
+                end
+
+                local selected = candidates[math.random(1, #candidates)]
+                return selected.part, selected.player
+            end
+
+            local function get_default_mouse_payload()
+                return {
+                    Hit = mouse.Hit,
+                    Target = mouse.Target,
+                    UnitRay = mouse.UnitRay,
+                    X = mouse.X,
+                    Y = mouse.Y
+                }
+            end
+
+            local function get_target_mouse_payload(target_part)
+                local camera = ws.CurrentCamera
+                if not camera or not target_part then
+                    return get_default_mouse_payload()
+                end
+
+                local target_position = target_part.Position
+                local direction = target_position - camera.CFrame.Position
+                if direction.Magnitude < 0.1 then
+                    direction = camera.CFrame.LookVector
+                end
+
+                local screen_position = camera:WorldToViewportPoint(target_position)
+
+                return {
+                    Hit = target_part.CFrame,
+                    Target = target_part,
+                    UnitRay = Ray.new(camera.CFrame.Position, direction.Unit),
+                    X = screen_position.X,
+                    Y = screen_position.Y
+                }
+            end
+
+            local function trigger_madrasian_left_click(payload)
+                task.spawn(function()
+                    pcall(function()
+                        local x = payload and payload.X or 0
+                        local y = payload and payload.Y or 0
+                        vim:SendMouseButtonEvent(x, y, 0, true, game, 1)
+                        task.wait(math.random(1, 15) / 1000)
+                        vim:SendMouseButtonEvent(x, y, 0, false, game, 1)
+                    end)
+                end)
+
+                local character = plr.Character
+                local handler = character and FindFirstChild(character, "CharacterHandler")
+                local remotes = handler and FindFirstChild(handler, "Remotes")
+                local left_click = remotes and FindFirstChild(remotes, "LeftClick")
+
+                if left_click then
+                    left_click:FireServer({
+                        math.random(1, 10),
+                        tonumber("0." .. tostring(math.random(100000, 999999)))
+                    })
+                    return true
+                end
+
+                return false
+            end
+
+            local function use_madrasian_tool(tool_name, target_part)
+                if not is_madrasian_shift_available() then
+                    return false
+                end
+
+                if shared.is_unloading or trinket_bot.gate_in_progress or emergency_gate_requested or trinket_bot.moderator_detected then
+                    return false
+                end
+
+                if trinket_bot.madrasian_action_in_progress then
+                    return false
+                end
+
+                local character = plr.Character
+                local backpack = FindFirstChild(plr, "Backpack")
+                local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+                local tool = get_bot_tool(tool_name)
+                if not character or not humanoid or not tool then
+                    return false
+                end
+
+                trinket_bot.madrasian_action_in_progress = true
+                local previous_priority = trinket_bot.priority_tool_action
+                trinket_bot.priority_tool_action = true
+
+                local changed_get_mouse = false
+                local used_tool = false
+
+                local success, err = pcall(function()
+                    local payload = target_part and get_target_mouse_payload(target_part) or get_default_mouse_payload()
+
+                    if target_part and get_mouse_remote then
+                        changed_get_mouse = true
+                        get_mouse_remote.OnClientInvoke = function()
+                            return payload
+                        end
+                    end
+
+                    if backpack and tool.Parent == backpack then
+                        humanoid:EquipTool(tool)
+
+                        local start_time = tick()
+                        while tool.Parent ~= character and tick() - start_time < 2 and trinket_bot.path_running do
+                            task.wait(0.05)
+                        end
+                    end
+
+                    if tool.Parent ~= character then
+                        return
+                    end
+
+                    task.wait(target_part and 0.1 or 0.05)
+                    used_tool = trigger_madrasian_left_click(payload)
+                    trinket_bot.last_madrasian_shift_action = tick()
+                    task.wait(target_part and 2 or 0.35)
+                end)
+
+                if changed_get_mouse and get_mouse_remote then
+                    pcall(function()
+                        get_mouse_remote.OnClientInvoke = get_default_mouse_payload
+                    end)
+                end
+
+                if not success then
+                    notify_madrasian_shift(tool_name .. " error: " .. tostring(err))
+                end
+
+                trinket_bot.priority_tool_action = previous_priority
+                trinket_bot.madrasian_action_in_progress = false
+
+                return success and used_tool
+            end
+
+            local function queue_madrasian_shift_retry(delay)
+                trinket_bot.madrasian_start_shift_attempted = false
+                trinket_bot.madrasian_shift_retry_at = tick() + (delay or 2)
+            end
+
+            local function start_madrasian_shift_setup()
+                if not is_madrasian_shift_available()
+                    or trinket_bot.madrasian_start_shift_attempted
+                    or tick() < (trinket_bot.madrasian_shift_retry_at or 0)
+                then
+                    return false
+                end
+
+                trinket_bot.madrasian_start_shift_attempted = true
+
+                if not get_bot_tool("Shift") then
+                    notify_madrasian_shift("Shift tool not found; not using Trinket Shift")
+                    queue_madrasian_shift_retry()
+                    return false
+                end
+
+                local previous_fake_model = get_madrasian_fake_model_name()
+                local shifted_model
+                local shifted_target_name
+
+                for attempt = 1, 5 do
+                    local target_part, target_player = get_random_shift_target()
+                    if not target_part then
+                        notify_madrasian_shift("No player target found for Shift")
+                        queue_madrasian_shift_retry()
+                        return false
+                    end
+
+                    local target_name = target_player and target_player.Name or "unknown"
+                    notify_madrasian_shift("Shifting into random player: " .. target_name)
+
+                    if not use_madrasian_tool("Shift", target_part) then
+                        notify_madrasian_shift("Shift click failed")
+                        queue_madrasian_shift_retry()
+                        return false
+                    end
+
+                    local current_fake_model = get_madrasian_fake_model_name()
+                    if current_fake_model and current_fake_model ~= previous_fake_model then
+                        shifted_model = current_fake_model
+                        shifted_target_name = target_name
+                        break
+                    end
+
+                    if attempt < 5 then
+                        notify_madrasian_shift("Fake model unchanged; retrying Shift")
+                        task.wait(0.25)
+                    end
+                end
+
+                if not shifted_model then
+                    notify_madrasian_shift("Shift failed; fake model unchanged after retries")
+                    queue_madrasian_shift_retry()
+                    return false
+                end
+
+                trinket_bot.madrasian_normal_shift_verified = true
+                trinket_bot.madrasian_shift_retry_at = 0
+                notify_madrasian_shift("Shifted into " .. shifted_model .. " via " .. shifted_target_name)
+
+                if not get_bot_tool("Trinket Shift") then
+                    notify_madrasian_shift("Trinket Shift tool not found")
+                    return true
+                end
+
+                if is_trinket_shifted() then
+                    notify_madrasian_shift("Trinket Shift already active")
+                    return true
+                end
+
+                notify_madrasian_shift("Securing Trinket Shift")
+                if not use_madrasian_tool("Trinket Shift") then
+                    notify_madrasian_shift("Trinket Shift click failed")
+                    return false
+                end
+
+                local trinket_start = tick()
+                while tick() - trinket_start < 4 and trinket_bot.path_running do
+                    if is_trinket_shifted() then
+                        notify_madrasian_shift("Trinket Shift secured")
+                        return true
+                    end
+
+                    task.wait(0.1)
+                end
+
+                notify_madrasian_shift("Trinket Shift state not detected")
+                return false
+            end
+
+            local function maintain_madrasian_shift()
+                if not is_madrasian_shift_available() or not trinket_bot.path_running then
+                    return false
+                end
+
+                if shared.is_unloading or trinket_bot.gate_in_progress or emergency_gate_requested or trinket_bot.moderator_detected then
+                    return false
+                end
+
+                if trinket_bot.madrasian_action_in_progress then
+                    return true
+                end
+
+                if trinket_bot.last_madrasian_shift_action and tick() - trinket_bot.last_madrasian_shift_action < 1.25 then
+                    return true
+                end
+
+                if not trinket_bot.madrasian_normal_shift_verified then
+                    if tick() >= (trinket_bot.madrasian_shift_retry_at or 0) then
+                        start_madrasian_shift_setup()
+                        return true
+                    end
+
+                    return false
+                end
+
+                if get_bot_tool("Trinket Shift") and not is_trinket_shifted() then
+                    return use_madrasian_tool("Trinket Shift")
+                end
+
+                return false
+            end
+
+            local function hold_idle_bait_tool()
+                if shared.is_unloading or not trinket_bot.path_running or not trinket_bot.tweening then
+                    return false
+                end
+
+                if not Toggles.HoldPerfloraWhenBotting or not Toggles.HoldPerfloraWhenBotting.Value then
+                    return false
+                end
+
+                if not trinket_bot.idle_bait_after_gate then
+                    return false
+                end
+
+                if currently_dropping or trinket_bot.gate_in_progress or trinket_bot.priority_tool_action or emergency_gate_requested or trinket_bot.moderator_detected then
+                    return false
+                end
+
+                if has_pending_auto_drop_tool() then
+                    return false
+                end
+
+                local character = plr.Character
+                local backpack = FindFirstChild(plr, "Backpack")
+                local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+                if not character or not humanoid then
+                    return false
+                end
+
+                local desired_tool = get_idle_bait_tool()
+                if not desired_tool then
+                    return false
+                end
+
+                local equipped_tool = FindFirstChildOfClass(character, "Tool")
+                if equipped_tool == desired_tool then
+                    return true
+                end
+
+                if equipped_tool
+                    and not is_idle_bait_tool(equipped_tool)
+                    and equipped_tool.Name ~= "Gate"
+                    and not (is_trinket_shifted() and is_madrasian_shift_tool(equipped_tool))
+                then
+                    return false
+                end
+
+                if tick() - last_idle_bait_equip < 0.5 then
+                    return true
+                end
+
+                if backpack and desired_tool.Parent == backpack then
+                    pcall(function()
+                        humanoid:EquipTool(desired_tool)
+                    end)
+                    last_idle_bait_equip = tick()
+                end
+
+                return true
+            end
+
             local function SmoothTeleport(target, is_trinket_teleport)
                 is_trinket_teleport = is_trinket_teleport or false
 
@@ -12551,6 +13180,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     trinket_bot.path_running = false
                     return
                 end
+
+                trinket_bot.tweening = true
+                hold_idle_bait_tool()
 
                 local character = plr.Character
                 if character then
@@ -12641,6 +13273,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 active_tween_data.tween = nil
                 active_tween_data.connection = nil
+                trinket_bot.tweening = false
             end
 
             local function getPing()
@@ -12683,6 +13316,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             local function Gate(where, expected_destination)
+                trinket_bot.gate_in_progress = true
+                local gate_ok, gate_result = pcall(function()
                 if not trinket_bot.path_running then
                     return false
                 end
@@ -12881,14 +13516,33 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
 
+                local function charge_gate_mana(target)
+                    local charged = utility:charge_mana_until(target, 20, function()
+                        return not trinket_bot.path_running
+                            or emergency_gate_requested ~= nil
+                            or trinket_bot.moderator_detected
+                    end)
+
+                    if charged then
+                        return true
+                    end
+
+                    utility:decharge_mana()
+                    if INPUT_BLOCKED then
+                        unblockInputs()
+                    end
+                    library:Notify(string.format("Gate mana charge stopped at %.0f/%.0f - aborting this gate attempt", mana.Value, target))
+                    return false
+                end
+
                 local in_danger = character and cs:HasTag(character, "Danger")
                 if is_azael and not in_danger then
-                    if mana.Value <= 15 then
-                        utility:charge_mana_until(15)
+                    if mana.Value <= 15 and not charge_gate_mana(15) then
+                        return false
                     end
                 elseif has_philosophers_stone then
-                    if mana.Value < 60 then
-                        utility:charge_mana_until(60)
+                    if mana.Value < 60 and not charge_gate_mana(60) then
+                        return false
                     end
                 else
                     local ping = getPing()
@@ -12905,8 +13559,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
                     end
 
-                    if mana.Value < adjusted_target then
-                        utility:charge_mana_until(adjusted_target)
+                    if mana.Value < adjusted_target and not charge_gate_mana(adjusted_target) then
+                        return false
                     end
                 end
 
@@ -12954,6 +13608,20 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 warn("Gate teleportation failed: NoFall not found after 2.5s")
                 return false
+                end)
+
+                trinket_bot.gate_in_progress = false
+
+                if not gate_ok then
+                    warn("Gate error:", gate_result)
+                    return false
+                end
+
+                if gate_result == true then
+                    trinket_bot.idle_bait_after_gate = true
+                end
+
+                return gate_result == true
             end
 
             local function CheckForTrinkets()
@@ -13730,43 +14398,50 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             end
 
-            local currently_dropping = false
+            currently_dropping = false
             local droppedTools = {}
             local queuedDropTools = {}
             local useOnlyItems = {
                 ["Idol of War"] = true,
             }
 
-            local function start_wake_me_up_loop()
-                if trinket_bot.wake_me_up_loop_running then
+            local function force_disable_beds_for_bot()
+                if game.PlaceId ~= 3541987450 then
                     return
                 end
 
-                trinket_bot.wake_me_up_loop_running = true
+                if not trinket_bot.disable_beds_forced then
+                    trinket_bot.disable_beds_forced = true
+                    trinket_bot.disable_beds_previous_value = Toggles.disable_beds_khei and Toggles.disable_beds_khei.Value or false
+                end
 
-                task.spawn(function()
-                    while true do
-                        if shared and shared.is_unloading then
-                            break
-                        end
+                if Toggles.disable_beds_khei then
+                    Toggles.disable_beds_khei:SetValue(true)
+                elseif cheat_client.start_bed_touch_guard then
+                    cheat_client.start_bed_touch_guard()
+                end
+            end
 
-                        if not (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true") then
-                            break
-                        end
+            local function release_disable_beds_for_bot()
+                if game.PlaceId ~= 3541987450 then
+                    trinket_bot.disable_beds_forced = false
+                    trinket_bot.disable_beds_previous_value = nil
+                    return
+                end
 
-                        pcall(function()
-                            local requests = rps and FindFirstChild(rps, "Requests")
-                            local wake_remote = requests and FindFirstChild(requests, "WAKEMEUPINSIDE")
-                            if wake_remote then
-                                wake_remote:FireServer(plr)
-                            end
-                        end)
+                if not trinket_bot.disable_beds_forced then
+                    return
+                end
 
-                        task.wait(5)
-                    end
+                local previous_value = trinket_bot.disable_beds_previous_value
+                trinket_bot.disable_beds_forced = false
+                trinket_bot.disable_beds_previous_value = nil
 
-                    trinket_bot.wake_me_up_loop_running = false
-                end)
+                if Toggles.disable_beds_khei then
+                    Toggles.disable_beds_khei:SetValue(previous_value == true)
+                elseif previous_value ~= true and cheat_client.restore_bed_touch_guard then
+                    cheat_client.restore_bed_touch_guard()
+                end
             end
 
             local function ExecutePath(test_mode)
@@ -13837,6 +14512,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 trinket_bot.path_running = true
+                trinket_bot.idle_bait_after_gate = false
+                trinket_bot.madrasian_start_shift_attempted = false
+                trinket_bot.madrasian_action_in_progress = false
+                trinket_bot.madrasian_normal_shift_verified = false
+                trinket_bot.last_madrasian_shift_action = 0
+                trinket_bot.madrasian_shift_retry_at = 0
 
                 if not plr.Character or not FindFirstChild(plr.Character, "HumanoidRootPart") then
                     trinket_bot.path_running = false
@@ -13907,7 +14588,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 if not test_mode then
                     mem:SetItem("botstarted", "true")
-                    start_wake_me_up_loop()
+                    force_disable_beds_for_bot()
 
                     if not mem:HasItem("serverhop_count") then
                         mem:SetItem("serverhop_count", "0")
@@ -14003,6 +14684,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         handle_moderator_detection(player)
                     end
                 end))
+
+                start_madrasian_shift_setup()
 
                 local glassmask_connection, glassmask_thrown_connection
                 local fimbul_escape_in_progress = false
@@ -14524,7 +15207,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 auto_trinket_connection = track_connection("auto_trinket", utility:Connection(rs.Heartbeat, LPH_NO_VIRTUALIZE(function()
                     if not plr.Character or shared.is_unloading or not trinket_bot.path_running then return end
 
+                    if maintain_madrasian_shift() then return end
+
                     if currently_dropping then return end
+
+                    hold_idle_bait_tool()
 
                     if Toggles.ReequipGateInLoop and Toggles.ReequipGateInLoop.Value then
                         local gate_in_backpack = FindFirstChild(plr.Backpack, "Gate")
@@ -14840,7 +15527,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                             local next_gate_point = nil
                             local next_gate_index = nil
-                            for j = i + 1, #trinket_bot.path_points do
+                            local current_point = trinket_bot.path_points[i]
+                            local gate_search_start = current_point and current_point.is_gate_point and i or i + 1
+                            for j = gate_search_start, #trinket_bot.path_points do
                                 if trinket_bot.path_points[j].is_gate_point then
                                     local destination_clear = true
                                     local blocking_player = ""
@@ -16678,6 +17367,24 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             })
 
+            if game.PlaceId == 5208655184 then
+                group_trinket_bot:AddToggle("ShiftingBot", {
+                    Text = "Shifting bot",
+                    Default = cheat_client.config.shifting_bot,
+                    Callback = function(value)
+                        cheat_client.config.shifting_bot = value
+                    end
+                })
+            end
+
+            group_trinket_bot:AddToggle("HoldPerfloraWhenBotting", {
+                Text = "Hold Perflora (when botting)",
+                Default = cheat_client.config.hold_perflora_when_botting,
+                Callback = function(value)
+                    cheat_client.config.hold_perflora_when_botting = value
+                end
+            })
+
             group_trinket_bot:AddDivider()
 
             group_trinket_bot:AddToggle("SkipIllusionist", {
@@ -17037,7 +17744,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             task.spawn(function()
                 if mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true" then
-                    start_wake_me_up_loop()
+                    force_disable_beds_for_bot()
                     task.wait(2)
 
                     trinket_bot.path_running = false
@@ -17137,6 +17844,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             utility:plain_webhook("@everyone CRITICAL: No saved path found during auto-start (trinket_bot_path empty) - kicking for safety")
                             library:Notify("CRITICAL: No saved path found - kicking")
                             mem:RemoveItem("botstarted")
+                            release_disable_beds_for_bot()
                             task.wait(0.5)
                             plr:Kick("No saved path found during auto-start")
                             return
@@ -17153,6 +17861,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             utility:plain_webhook(string.format("FAILED TO LOAD PATH: %s (load_success=%s, points=%d) - Kicking", saved_path, tostring(load_success), #trinket_bot.path_points))
                             library:Notify("Path failed to load! Kicking...")
                             mem:RemoveItem("botstarted")
+                            release_disable_beds_for_bot()
                             task.wait(1)
                             plr:Kick(string.format("Path failed to load: %s", saved_path))
                             return
@@ -17758,6 +18467,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             utility:plain_webhook("@everyone CRITICAL: Character lost after path load during auto-start - kicking for safety")
                             library:Notify("CRITICAL: Character lost after path load - kicking")
                             mem:RemoveItem("botstarted")
+                            release_disable_beds_for_bot()
                             task.wait(0.5)
                             plr:Kick("Character lost after path load during auto-start")
                             return
@@ -17980,6 +18690,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         trinket_bot.path_running = false
                         mem:RemoveItem("botstarted")
                         mem:RemoveItem("serverhop_count")
+                        release_disable_beds_for_bot()
 
                         kick_after_path = false
                         kick_debounce = false
@@ -18096,6 +18807,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         trinket_bot.path_running = false
                         mem:RemoveItem("botstarted")
                         mem:RemoveItem("serverhop_count")
+                        release_disable_beds_for_bot()
 
                         if was_botstarted then
                             library:Notify("Bot state reset (was in inconsistent state)")
@@ -18193,7 +18905,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if pd and pd:IsA("Tool") then
                         local character = plr.Character
                         if character and FindFirstChild(character, "Humanoid") then
-                            character.Humanoid:EquipTool(pd)
+                            trinket_bot.priority_tool_action = true
+                            pcall(function()
+                                character.Humanoid:EquipTool(pd)
+                            end)
 
                             task.spawn(function()
                                 local timeout = tick() + 5
@@ -18251,6 +18966,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         library:Notify("Used Phoenix Down!")
                                     end
                                 end
+
+                                trinket_bot.priority_tool_action = false
                             end)
                         end
                     end
@@ -18279,6 +18996,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return
                 end
                 local is_use_only_item = useOnlyItems[item.Name] == true
+
+                while trinket_bot.madrasian_action_in_progress do
+                    task.wait(0.05)
+                end
 
                 while currently_dropping do
                     task.wait(0.1)
@@ -18461,6 +19182,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                     if not obj:IsA("Tool") then return end
 
+                    if is_selected_auto_drop_tool(obj) then
+                        trinket_bot.priority_tool_action = true
+                    end
+
                     task.wait(0.05)
 
                     if not kick_debounce and Toggles.KickOnTrinket and Toggles.KickOnTrinket.Value and Options.KickTrinketList and Options.KickTrinketList.Value then
@@ -18489,10 +19214,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 task.spawn(function()
                                     drop_item(item)
                                     queuedDropTools[item] = nil
+                                    trinket_bot.priority_tool_action = false
                                 end)
                             end
                         end
                     end
+
+                    trinket_bot.priority_tool_action = false
                 end)
             end
 
