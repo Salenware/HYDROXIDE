@@ -7544,7 +7544,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             })
 
             group_auto_parry:AddDropdown("ParryAbilities", {
-                Values = {"Viribus", "Owlslash", "Shadowrush", "Verdien", "Grapple"},
+                Values = {"Viribus", "Owlslash", "Shadowrush", "Verdien", "Snarvindur", "Grapple"},
                 Default = 1,
                 Multi = true,
                 Text = "Parry Abilities",
@@ -26716,6 +26716,61 @@ end
             local LAST_PARRY = 0
             local EARTH_PILLAR_PARRY_DISTANCE = 10
             local EARTH_PILLAR_BLOCK_DURATION = 0.45
+            local SNARVINDUR_BLOCK_DURATION = 0.4
+            local MANA_SHIELDABLE_TOOLS = {
+                ["respirare"] = true,
+                ["abyssal scream"] = true,
+                ["armis"] = true,
+                ["trickstus"] = true,
+                ["sagitta sol"] = true,
+                ["nocere"] = true,
+                ["ignis"] = true,
+                ["telorum"] = true,
+                ["trahere"] = true,
+                ["gelidus"] = true,
+                ["snarvindur"] = true,
+                ["tempest soul"] = true,
+                ["celeritas"] = true,
+                ["scrupus"] = true,
+                ["viribus"] = true,
+                ["gate"] = true,
+                ["hystericus"] = true,
+                ["howler"] = true,
+                ["furantur"] = true,
+                ["reditus"] = true,
+                ["ligans"] = true,
+                ["inferi"] = true,
+                ["floresco"] = true,
+                ["verdien"] = true,
+                ["perflora"] = true,
+                ["fons vitae"] = true,
+                ["intermissum"] = true,
+                ["dominus"] = true,
+                ["tenebris"] = true,
+                ["globus"] = true,
+                ["claritum"] = true,
+                ["custos"] = true,
+                ["secare"] = true,
+                ["contrarium"] = true,
+                ["fimbulvetr"] = true,
+                ["manus dei"] = true,
+                ["hoppa"] = true,
+                ["percutiens"] = true,
+                ["verto"] = true,
+                ["vulnere"] = true,
+                ["mederi"] = true,
+                ["convivium"] = true,
+                ["dulciferus"] = true,
+                ["virejas"] = true,
+                ["zidinys"] = true,
+                ["nosferatus"] = true,
+                ["gourdus"] = true,
+                ["vaskas"] = true,
+                ["igelti"] = true,
+                ["munificus"] = true,
+                ["ferula"] = true,
+                ["vir nivis"] = true,
+            }
             local INPUT_BLOCKED = false
             local BLOCKED_KEYS = {Enum.KeyCode.F, Enum.KeyCode.G}
 
@@ -26828,7 +26883,7 @@ end
                 return false
             end
 
-            local function performAutoParry(delay, blockDuration, useVim, attackingPlayer)
+            local function performAutoParry(delay, blockDuration, useVim, attackingPlayer, ignoreParryCooldown)
                 if attackingPlayer and cheat_client:is_friendly(attackingPlayer) then
                     return
                 end
@@ -26847,7 +26902,7 @@ end
                 if not semiBlatantBlock and FindFirstChild(plr.Character, "NoDash") then return end
 
                 if FindFirstChildOfClass(plr.Character, "ForceField") then return end
-                if on_cooldown() then return end
+                if not ignoreParryCooldown and on_cooldown() then return end
 
                 LAST_PARRY = currentTime
                 blockDuration = blockDuration or 0.3
@@ -26870,7 +26925,7 @@ end
 
                 if adjustedDelay > 0 then
                     task.wait(adjustedDelay)
-                    if on_cooldown() then
+                    if not ignoreParryCooldown and on_cooldown() then
                         if not useVim then
                             unblockInputs()
                         end
@@ -26880,7 +26935,11 @@ end
 
                 local humanoid = FindFirstChildOfClass(plr.Character, "Humanoid")
                 local mana = FindFirstChild(plr.Character, "Mana")
-                if humanoid and mana and mana.Value > 0 then
+                local equippedTool = FindFirstChildOfClass(plr.Character, "Tool")
+                local isManaShieldableTool = equippedTool
+                    and MANA_SHIELDABLE_TOOLS[string.lower(equippedTool.Name)]
+
+                if humanoid and mana and mana.Value > 0 and isManaShieldableTool then
                     humanoid:UnequipTools()
                 end
 
@@ -26998,6 +27057,12 @@ end
                                         end)
                                     end
                                 end
+                            elseif sound.Name == "PerfectCast" and shared and Toggles and Toggles.AutoPerfectBlock and Toggles.AutoPerfectBlock.Value and Options.ParryAbilities.Value["Snarvindur"] and FindFirstChild(character, "Snarvindur") then
+                                task.spawn(function()
+                                    if shared then
+                                        performAutoParry(0, SNARVINDUR_BLOCK_DURATION, true, player, true)
+                                    end
+                                end)
                             elseif sound.Name == "PerfectCast" and shared and Toggles and Toggles.AutoPerfectBlock and Toggles.AutoPerfectBlock.Value and Options.ParryAbilities.Value["Verdien"] then
                                 local soundInfo = AUTO_PARRY_SOUNDS[sound.Name]
                                 local hasVerdien = FindFirstChild(character, "Verdien") or FindFirstChild(character, "New Verdien")
@@ -27008,7 +27073,7 @@ end
                                     if should_parry then
                                         task.spawn(function()
                                             if shared then
-                                                performAutoParry(soundInfo.delay, soundInfo.blockDuration, true, player)
+                                                performAutoParry(soundInfo.delay, soundInfo.blockDuration, true, player, true)
                                             end
                                         end)
                                     end
