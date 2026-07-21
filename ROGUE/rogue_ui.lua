@@ -17444,8 +17444,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Values = {
                     "Rift Gem", "Mysterious Artifact", "Phoenix Flower", "Azael Horn",
                     "Amulet of the White King", "Lannis's Amulet", "Phoenix Down", "Night Stone", "Howler Friend",
-                    "???", "Scroll", "Diamond", "Emerald", "Ruby", "Sapphire", "Ice Essence", "Bound Book",
-                    "Idol of the Forgotten", "Old Ring", "Ring", "Goblet", "Old Amulet", "Amulet", "Opal"
+                    "Ice Essence", "Scroll of Trahere", "Scroll of Telorum", "Scroll of Sraunus"
                 },
                 Multi = true,
                 Default = {},
@@ -28023,7 +28022,7 @@ end
 
                         if Toggles.SnapTrain and Toggles.SnapTrain.Value and utility then
                             if Toggles.AutoCharge and Toggles.AutoCharge.Value then
-                                Toggles.AutoCharge:SetValue(false)
+                                Toggles.AutoCharge:SetValue(false)  
                             end
 
                             local tool = FindFirstChildOfClass(char, "Tool")
