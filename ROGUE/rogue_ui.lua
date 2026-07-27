@@ -28608,16 +28608,16 @@ end
             local EFFECTS = {
                 flash = {
                     color = Color3.fromRGB(255, 255, 255),
-                    duration = 0.35,
+                    duration = 0.5,
                 },
                 blackout = {
                     color = Color3.fromRGB(0, 0, 0),
                     duration = 3,
                 },
                 jumpscare_1 = {
-                    image = "rbxassetid://0",
-                    sound = "rbxassetid://0",
-                    volume = 1,
+                    image = "rbxassetid://14819601003",
+                    sound = "rbxassetid://1693890393",
+                    volume = 5,
                     duration = 3,
                 },
                 clip_1 = {
