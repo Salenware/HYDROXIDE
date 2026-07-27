@@ -628,6 +628,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             reequip_gate_in_loop = true,
             shifting_bot = false,
             hold_perflora_when_botting = true,
+            aagun_safety = true,
 
 
             temperature_lock = false,
@@ -3679,6 +3680,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if (Head == nil) then
                     return
                 end
+
+                local reset_token = os.clock()
+                cheat_client.manual_reset_pending = reset_token
+                task.delay(15, function()
+                    if cheat_client.manual_reset_pending == reset_token then
+                        cheat_client.manual_reset_pending = nil
+                    end
+                end)
             
                 Head:Destroy()
             end
@@ -3779,6 +3788,129 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local send_webhook = HXD_SEND_WEBHOOK
             local sanitize = HXD_SANITIZE
 
+            local BOT_NOTIFICATION_MEM_KEY = "salenware_bot_notifications"
+            local restored_bot_notifications = {}
+            if mem:HasItem(BOT_NOTIFICATION_MEM_KEY) then
+                pcall(function()
+                    local decoded = HttpService:JSONDecode(mem:GetItem(BOT_NOTIFICATION_MEM_KEY))
+                    if type(decoded) == "table" then
+                        restored_bot_notifications = decoded
+                    end
+                end)
+            end
+            cheat_client.salenware_bot_notifications = cheat_client.salenware_bot_notifications or restored_bot_notifications
+
+            local function save_bot_notifications()
+                local buffer = cheat_client.salenware_bot_notifications or {}
+                pcall(function()
+                    if #buffer == 0 then
+                        mem:RemoveItem(BOT_NOTIFICATION_MEM_KEY)
+                    else
+                        mem:SetItem(BOT_NOTIFICATION_MEM_KEY, HttpService:JSONEncode(buffer))
+                    end
+                end)
+            end
+
+            local function is_artifact_payload(payload)
+                if type(payload) ~= "table" then return false end
+                for _, embed in ipairs(payload.embeds or {}) do
+                    if type(embed) == "table" and tostring(embed.title or ""):upper():find("ARTIFACT FOUND", 1, true) then
+                        return true
+                    end
+                end
+                return false
+            end
+
+            local function trim_bot_log_text(value, max_length)
+                if value == nil then return "" end
+                local result = tostring(value)
+                if #result > max_length then
+                    result = result:sub(1, max_length)
+                end
+                return result
+            end
+
+            local function sanitize_bot_log_embed(embed)
+                if type(embed) ~= "table" then return nil end
+
+                local result = {
+                    title = trim_bot_log_text(embed.title, 256),
+                    description = trim_bot_log_text(embed.description, 2048),
+                    color = tonumber(embed.color) or 0,
+                    timestamp = trim_bot_log_text(embed.timestamp, 64),
+                    fields = {},
+                }
+
+                if type(embed.thumbnail) == "table" then
+                    result.thumbnail = {
+                        url = trim_bot_log_text(embed.thumbnail.url, 512),
+                    }
+                end
+                if type(embed.footer) == "table" then
+                    result.footer = {
+                        text = trim_bot_log_text(embed.footer.text, 512),
+                    }
+                end
+                for index, field in ipairs(embed.fields or {}) do
+                    if index > 8 then break end
+                    if type(field) == "table" then
+                        result.fields[#result.fields + 1] = {
+                            name = trim_bot_log_text(field.name, 256),
+                            value = trim_bot_log_text(field.value, 1024),
+                            inline = field.inline == true,
+                        }
+                    end
+                end
+                return result
+            end
+
+            function utility:record_bot_webhook(payload)
+                local bot = cheat_client.trinket_bot
+                local bot_running = (bot and bot.path_running)
+                    or (mem and mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true")
+                if not bot_running or not is_artifact_payload(payload) then return end
+
+                local entry = {
+                    id = HttpService:GenerateGUID(false),
+                    content = trim_bot_log_text(payload.content, 1000),
+                    embeds = {},
+                    server_timestamp = os.time(),
+                }
+                for index, embed in ipairs(payload.embeds or {}) do
+                    if index > 4 then break end
+                    local clean = sanitize_bot_log_embed(embed)
+                    if clean and clean.title:upper():find("ARTIFACT FOUND", 1, true) then
+                        entry.embeds[#entry.embeds + 1] = clean
+                    end
+                end
+                if #entry.embeds == 0 then return end
+
+                local first_embed = entry.embeds[1]
+                entry._signature = table.concat({
+                    tostring(first_embed.title or ""),
+                    tostring(first_embed.timestamp or ""),
+                    tostring(game.JobId),
+                }, "\31")
+
+                local buffer = cheat_client.salenware_bot_notifications
+                for _, existing in ipairs(buffer) do
+                    if existing._signature == entry._signature then
+                        return
+                    end
+                end
+
+                buffer[#buffer + 1] = entry
+                while #buffer > 100 do
+                    table.remove(buffer, 1)
+                end
+                save_bot_notifications()
+            end
+
+            function utility:bot_webhook(url, payload)
+                utility:record_bot_webhook(payload)
+                return send_webhook(url, payload)
+            end
+
             function utility:plain_webhook(text)
                 if not cheat_client.config.webhook or cheat_client.config.webhook == "" then
                     return
@@ -3791,11 +3923,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     content = text
                 end
 
+                local payload = {
+                    username = cheat_client.config.webhook_username or "bladee",
+                    content = content
+                }
+                utility:record_bot_webhook(payload)
                 pcall(function()
-                    send_webhook(cheat_client.config.webhook, {
-                        username = cheat_client.config.webhook_username or "bladee",
-                        content = content
-                    })
+                    send_webhook(cheat_client.config.webhook, payload)
                 end)
             end
 
@@ -14026,7 +14160,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         if cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
                             task.spawn(function()
                                 pcall(function()
-                                    HXD_SEND_WEBHOOK(cheat_client.config.webhook, {
+                                    utility:bot_webhook(cheat_client.config.webhook, {
                                         username = cheat_client.config.webhook_username or "bladee",
                                         embeds = {embed}
                                     })
@@ -14131,11 +14265,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         local embed_count = #embeds
                         task.spawn(function()
                             local success, result = pcall(function()
-                                return HXD_SEND_WEBHOOK(webhook_url, {
+                                local payload = {
                                     username = username,
                                     content = ping_content,
                                     embeds = embeds
-                                })
+                                }
+                                utility:record_bot_webhook(payload)
+                                return HXD_SEND_WEBHOOK(webhook_url, payload)
                             end)
                             if not success then
                                 library:Notify(string.format("Artifact stream error: %s", tostring(result)))
@@ -14492,6 +14628,45 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             end
 
+            local AAGUN_STOP_COUNT = 2
+            local AAGUN_COUNT_KEY = "aagun_session_count"
+
+            local function record_aagun_reset()
+                local count = 0
+                if mem:HasItem(AAGUN_COUNT_KEY) then
+                    count = tonumber(mem:GetItem(AAGUN_COUNT_KEY)) or 0
+                end
+                count += 1
+                mem:SetItem(AAGUN_COUNT_KEY, tostring(count))
+                return count
+            end
+
+            local function handle_no_ctag_bot_death()
+                if cheat_client.manual_reset_pending then
+                    cheat_client.manual_reset_pending = nil
+                    return false, nil, true
+                end
+
+                local count = record_aagun_reset()
+                pcall(function()
+                    library:Notify(string.format("Aagun count: %d/%d this bot session", count, AAGUN_STOP_COUNT))
+                end)
+
+                local safety_enabled = Toggles.AagunSafety and Toggles.AagunSafety.Value or false
+                if safety_enabled and count >= AAGUN_STOP_COUNT then
+                    pcall(function()
+                        library:Notify("bot aagunned twice - kicking")
+                    end)
+                    pcall(function()
+                        utility:plain_webhook("@here bot aagunned 2 times - kicking")
+                    end)
+                    task.wait(0.3)
+                    plr:Kick("bot aagunned twice - kicking")
+                    return true, count, false
+                end
+
+                return false, count, false
+            end
             local function ExecutePath(test_mode)
                 if not cheat_client or not cheat_client.config then
                     return
@@ -14636,6 +14811,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 if not test_mode then
+                    local continuing_bot_session = mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
+                    if not continuing_bot_session then
+                        mem:SetItem("bot_session_started_at", tostring(os.time()))
+                        mem:SetItem(AAGUN_COUNT_KEY, "0")
+                    end
                     mem:SetItem("botstarted", "true")
                     force_disable_beds_for_bot()
 
@@ -14673,19 +14853,44 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             if test_mode then
                                 pcall(function() library:Notify("You died (test mode - not kicking)") end)
                             elseif stay_in_server then
-                                pcall(function() library:Notify("You died (stay in server - not kicking)") end)
-                                pcall(function() utility:plain_webhook("@here bot died (stay in server mode)") end)
+                                local died_with_danger = character and cs:HasTag(character, "Danger")
+                                if died_with_danger then
+                                    pcall(function() library:Notify("You died (stay in server - not kicking)") end)
+                                    pcall(function() utility:plain_webhook("@here bot died (stay in server mode)") end)
+                                else
+                                    local stopped, count, manual_reset = handle_no_ctag_bot_death()
+                                    if not stopped then
+                                        if manual_reset then
+                                            pcall(function() utility:plain_webhook("@here bot manually reset (stay in server mode)") end)
+                                        else
+                                            pcall(function()
+                                                utility:plain_webhook(string.format("@here bot aagunned %d time(s) (stay in server mode)", count))
+                                            end)
+                                        end
+                                    end
+                                end
                             else
                                 task.spawn(function()
-                                    local died_with_danger = plr.Character and cs:HasTag(plr.Character, "Danger")
+                                    local died_with_danger = character and cs:HasTag(character, "Danger")
                                     if died_with_danger then
                                         pcall(function() utility:plain_webhook("@everyone bot died with ctag - kicking") end)
                                         task.wait(0.3)
                                         plr:Kick("bot died")
                                     else
-                                        pcall(function() utility:plain_webhook("@here bot died without ctag, server hopping") end)
+                                        local stopped, count, manual_reset = handle_no_ctag_bot_death()
+                                        if stopped then
+                                            return
+                                        end
+
+                                        if manual_reset then
+                                            pcall(function() utility:plain_webhook("@here bot manually reset, server hopping") end)
+                                        else
+                                            pcall(function()
+                                                utility:plain_webhook(string.format("@here bot aagunned %d time(s), server hopping", count))
+                                            end)
+                                        end
                                         task.wait(15)
-                                        TrinketBotServerhop("bot died without ctag, server hopping")
+                                        TrinketBotServerhop(manual_reset and "bot manually reset, server hopping" or "bot aagunned, server hopping")
                                     end
                                 end)
                             end
@@ -17115,7 +17320,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         if cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
                             task.spawn(function()
                                 pcall(function()
-                                    HXD_SEND_WEBHOOK(cheat_client.config.webhook, {
+                                    utility:bot_webhook(cheat_client.config.webhook, {
                                         username = cheat_client.config.webhook_username or "bladee",
                                         embeds = {embed}
                                     })
@@ -17222,7 +17427,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
                         task.spawn(function()
                             pcall(function()
-                                HXD_SEND_WEBHOOK(cheat_client.config.webhook, {
+                                utility:bot_webhook(cheat_client.config.webhook, {
                                     username = cheat_client.config.webhook_username or "bladee",
                                     embeds = {embed}
                                 })
@@ -17432,6 +17637,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Default = cheat_client.config.hold_perflora_when_botting,
                 Callback = function(value)
                     cheat_client.config.hold_perflora_when_botting = value
+                end
+            })
+
+            group_trinket_bot:AddToggle("AagunSafety", {
+                Text = "Aagun safety",
+                Default = cheat_client.config.aagun_safety,
+                Tooltip = "Kick the client after 2 Aagun resets to prevent getting banned",
+                Callback = function(value)
+                    cheat_client.config.aagun_safety = value
                 end
             })
 
@@ -17859,9 +18073,35 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     end
 
                                     local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
-                                    if stay_in_server then
+                                    local died_with_danger = character and cs:HasTag(character, "Danger")
+                                    if stay_in_server and died_with_danger then
                                         pcall(function() library:Notify("Died during auto-start (stay in server mode)") end)
                                         pcall(function() utility:plain_webhook("@here Bot died during auto-start (stay in server mode)") end)
+                                    elseif not died_with_danger then
+                                        local stopped, count, manual_reset = handle_no_ctag_bot_death()
+                                        if stopped then
+                                            return
+                                        end
+
+                                        if stay_in_server then
+                                            if manual_reset then
+                                                pcall(function() utility:plain_webhook("@here Bot manually reset during auto-start (stay in server mode)") end)
+                                            else
+                                                pcall(function()
+                                                    utility:plain_webhook(string.format("@here Bot aagunned %d time(s) during auto-start (stay in server mode)", count))
+                                                end)
+                                            end
+                                        else
+                                            if manual_reset then
+                                                pcall(function() utility:plain_webhook("@here Bot manually reset during auto-start - serverhopping") end)
+                                            else
+                                                pcall(function()
+                                                    utility:plain_webhook(string.format("@here Bot aagunned %d time(s) during auto-start - serverhopping", count))
+                                                end)
+                                            end
+                                            task.wait(15)
+                                            TrinketBotServerhop(manual_reset and "Bot manually reset during auto-start" or "Bot aagunned during auto-start")
+                                        end
                                     else
                                         pcall(function() library:Notify("Died during auto-start - kicking") end)
                                         pcall(function() utility:plain_webhook("@everyone Bot died during auto-start - kicking") end)
@@ -19020,11 +19260,28 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return locations
             end
 
+            local remote_buttons = {}
+
+            local function make_remote_button_id(location, suffix)
+                local source = table.concat({
+                    tostring(location.tab or "Other"),
+                    tostring(location.group or "Other"),
+                    tostring(location.order or 0),
+                    tostring(suffix or ""),
+                }, "\31")
+                local hash = 2166136261
+                for index = 1, #source do
+                    hash = bit32.bxor(hash, string.byte(source, index))
+                    hash = (hash * 16777619) % 4294967296
+                end
+                return string.format("button_%08x%s", hash, suffix or "")
+            end
+
             local function get_remote_controls()
                 local controls = {}
                 local locations = get_remote_control_locations()
                 local function append(control, source)
-                    if #controls < 250 then
+                    if #controls < 500 then
                         local location = locations[source]
                         control.tab = location and location.tab or "Other"
                         control.group = location and location.group or "Other"
@@ -19081,6 +19338,39 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
                     end
                 end
+                remote_buttons = {}
+
+                local function append_button(button, owner, suffix)
+                    local location = locations[owner]
+                    if not location
+                        or not button
+                        or type(button.Func) ~= "function"
+                        or button.Disabled == true
+                        or button.Visible == false
+                    then
+                        return
+                    end
+
+                    local id = make_remote_button_id(location, suffix)
+                    remote_buttons[id] = button
+                    append({
+                        id = id,
+                        label = tostring(button.Text or "Run"),
+                        type = "button",
+                        confirm = button.DoubleClick == true or button.Risky == true,
+                        risky = button.Risky == true,
+                    }, owner)
+                end
+
+                for source in pairs(locations) do
+                    if source and source.Type == "Button" then
+                        append_button(source, source, "")
+                        if source.SubButton then
+                            append_button(source.SubButton, source, "_sub")
+                        end
+                    end
+                end
+
                 return controls
             end
 
@@ -19116,11 +19406,36 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 error("unsupported control")
             end
 
+            local function press_remote_control(id)
+                local button = remote_buttons[id]
+                assert(button, "unknown button")
+                assert(button.Disabled ~= true and button.Visible ~= false, "button unavailable")
+                assert(type(button.Func) == "function", "button callback unavailable")
+                button.Func()
+            end
+
             local function run_session_action(name)
                 local actions = cheat_client.salenware_session_actions
                 local action = actions and actions[name]
                 assert(type(action) == "function", name .. " unavailable")
                 action()
+            end
+
+            local function get_bot_notification_batch(limit)
+                local buffer = cheat_client.salenware_bot_notifications or {}
+                local batch = {}
+                for index = 1, math.min(tonumber(limit) or 25, #buffer) do
+                    batch[index] = buffer[index]
+                end
+                return batch
+            end
+
+            local function acknowledge_bot_notifications(count)
+                local buffer = cheat_client.salenware_bot_notifications or {}
+                for _ = 1, math.min(tonumber(count) or 0, #buffer) do
+                    table.remove(buffer, 1)
+                end
+                save_bot_notifications()
             end
 
             getgenv().SalenwareRemoteAdapter = {
@@ -19129,8 +19444,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end,
                 get_status = function()
                     local character = plr.Character
+                    local bot_active = trinket_bot.path_running
+                        or (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true")
+                    local bot_started_at = mem:HasItem("bot_session_started_at") and tonumber(mem:GetItem("bot_session_started_at")) or nil
+                    if bot_active and not bot_started_at then
+                        bot_started_at = os.time()
+                        mem:SetItem("bot_session_started_at", tostring(bot_started_at))
+                    end
                     return {
-                        bot = trinket_bot.path_running and "Running" or "Idle",
+                        bot = bot_active and "Running" or "Idle",
+                        bot_active = bot_active,
+                        bot_started_at = bot_started_at,
                         path = trinket_bot.current_path_name ~= "" and trinket_bot.current_path_name or "None",
                         path_index = get_nearest_path_index(),
                         danger = character and cs:HasTag(character, "Danger") or false,
@@ -19138,7 +19462,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end,
                 get_controls = get_remote_controls,
                 get_server_snapshot = get_server_snapshot,
+                get_bot_notifications = get_bot_notification_batch,
+                acknowledge_bot_notifications = acknowledge_bot_notifications,
                 set_control = set_remote_control,
+                press_control = press_remote_control,
                 pause_bot = function()
                     stop_button.Func()
                 end,
@@ -19301,7 +19628,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         if cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
                                             task.spawn(function()
                                                 pcall(function()
-                                                    HXD_SEND_WEBHOOK(cheat_client.config.webhook, {
+                                                    utility:bot_webhook(cheat_client.config.webhook, {
                                                         username = cheat_client.config.webhook_username or "bladee",
                                                         embeds = {embed}
                                                     })
@@ -26439,7 +26766,7 @@ end
 
                             if cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
                                 pcall(function()
-                                    HXD_SEND_WEBHOOK(cheat_client.config.webhook, {
+                                    utility:bot_webhook(cheat_client.config.webhook, {
                                         username = cheat_client.config.webhook_username or "bladee",
                                         content = webhook_msg,
                                         embeds = {embed}
@@ -26523,11 +26850,13 @@ end
                                         timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
                                     }
 
-                                    HXD_SEND_WEBHOOK(secondary_webhook_url, {
+                                    local payload = {
                                         username = "Jew",
                                         content = "<@&1454862161015734455>",
                                         embeds = {log_embed}
-                                    })
+                                    }
+                                    utility:record_bot_webhook(payload)
+                                    HXD_SEND_WEBHOOK(secondary_webhook_url, payload)
                                 end)
                             end
 
@@ -28574,10 +28903,11 @@ end
 
             local API_URL = "https://salenwarehub-control.salenwarehub.workers.dev"
             local CLIENT_TOKEN = "EICC_QZQ4ySw5NK92z6DaaIjq40F7FK4n0Gdy5se4OE"
-            local VERSION = "salenwarehub-0.2.1"
+            local VERSION = "salenwarehub-0.4.0"
             local SESSION_STARTED_AT = os.time()
             local MAX_CHAT_BUFFER = 200
             local MAX_CHAT_BATCH = 50
+            local MAX_BOT_NOTIFICATION_BATCH = 25
 
             local Players = game:GetService("Players")
             local HttpService = game:GetService("HttpService")
@@ -28753,6 +29083,10 @@ end
                     assert(type(adapter.set_control) == "function", "set_control unavailable")
                     adapter.set_control(payload.control, payload.value)
                 end,
+                press_control = function(payload)
+                    assert(type(adapter.press_control) == "function", "press_control unavailable")
+                    adapter.press_control(payload.control)
+                end,
                 ban_button = function()
                     assert(type(adapter.ban_button) == "function", "ban_button unavailable")
                     adapter.ban_button()
@@ -28794,6 +29128,20 @@ end
                     if ok and type(value) == "table" then return value end
                 end
                 return {}
+            end
+
+            local function getBotNotifications()
+                if type(adapter.get_bot_notifications) == "function" then
+                    local ok, value = pcall(adapter.get_bot_notifications, MAX_BOT_NOTIFICATION_BATCH)
+                    if ok and type(value) == "table" then return value end
+                end
+                return {}
+            end
+
+            local function acknowledgeBotNotifications(count)
+                if type(adapter.acknowledge_bot_notifications) == "function" then
+                    pcall(adapter.acknowledge_bot_notifications, count)
+                end
             end
 
             local function serverTime()
@@ -28951,6 +29299,7 @@ end
                 for index = 1, math.min(MAX_CHAT_BATCH, #chatBuffer) do
                     batch[index] = chatBuffer[index]
                 end
+                local bot_notifications = getBotNotifications()
 
                 local response = post("/api/client/heartbeat", {
                     user_id = player.UserId,
@@ -28965,8 +29314,10 @@ end
                     controls = getControls(),
                     server = getServerSnapshot(),
                     chat = batch,
+                    bot_notifications = bot_notifications,
                 })
 
+                acknowledgeBotNotifications(#bot_notifications)
                 for _ = 1, #batch do
                     table.remove(chatBuffer, 1)
                 end
