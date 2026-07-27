@@ -27319,6 +27319,30 @@ end
 
             local connectedSounds = {}
             local characterConnections = {}
+
+            local function is_local_player_grappled()
+                local localCharacter = plr.Character
+                if not localCharacter then
+                    return false
+                end
+
+                for _, player in ipairs(plrs:GetPlayers()) do
+                    if player ~= plr and player.Character then
+                        local leftArm = FindFirstChild(player.Character, "Left Arm")
+                        local cord = leftArm and FindFirstChild(leftArm, "Cord")
+                        local attachment = cord and cord:IsA("Beam") and cord.Attachment1
+
+                        if attachment
+                            and attachment.Name == "Attachment2"
+                            and attachment:IsDescendantOf(localCharacter)
+                        then
+                            return true
+                        end
+                    end
+                end
+
+                return false
+            end
             
             local function disconnect_character_sounds(player)
                 if characterConnections[player] then
@@ -27390,7 +27414,7 @@ end
                                         end)
                                     end
                                 end
-                            elseif sound.Name == "PerfectCast" and shared and Toggles and Toggles.AutoPerfectBlock and Toggles.AutoPerfectBlock.Value and Options.ParryAbilities.Value["Snarvindur"] and FindFirstChild(character, "Snarvindur") then
+                            elseif sound.Name == "PerfectCast" and shared and Toggles and Toggles.AutoPerfectBlock and Toggles.AutoPerfectBlock.Value and Options.ParryAbilities.Value["Snarvindur"] and FindFirstChild(character, "Snarvindur") and not is_local_player_grappled() then
                                 task.spawn(function()
                                     if shared then
                                         performAutoParry(0, SNARVINDUR_BLOCK_DURATION, true, player, true)
