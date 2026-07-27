@@ -1891,6 +1891,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if environment.SalenwareRemote and environment.SalenwareRemote.Stop then
                     environment.SalenwareRemote.Stop()
                 end
+                environment.SalenwareRemote = nil
                 environment.SalenwareRemoteAdapter = nil
             end)
 
@@ -18950,10 +18951,80 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return nearest_index
             end
 
+            local REMOTE_CONTROL_TAB_ORDER = {
+                "Combat",
+                "Visuals",
+                "World",
+                "Exploits",
+                "Movement",
+                "Automation",
+                "Misc",
+                "Botting",
+                "Macros",
+                "Interface",
+                "Config",
+            }
+
+            local function map_remote_control_container(locations, container, tab_name, group_name)
+                if not container then return end
+
+                for order, control in ipairs(container.Elements or {}) do
+                    locations[control] = {
+                        tab = tab_name,
+                        group = group_name,
+                        order = order,
+                    }
+                end
+
+                for _, dependency_box in pairs(container.DependencyBoxes or {}) do
+                    map_remote_control_container(locations, dependency_box, tab_name, group_name)
+                end
+            end
+
+            local function get_remote_control_locations()
+                local locations = {}
+
+                for _, tab_name in ipairs(REMOTE_CONTROL_TAB_ORDER) do
+                    local tab = Tabs and Tabs[tab_name]
+                    if tab then
+                        local group_names_by_holder = {}
+
+                        for group_name, groupbox in pairs(tab.Groupboxes or {}) do
+                            group_name = tostring(group_name)
+                            local holder = groupbox.BoxHolder
+                            if holder then
+                                group_names_by_holder[holder] = group_name
+                            end
+                            map_remote_control_container(locations, groupbox, tab_name, group_name)
+                        end
+
+                        for tabbox_name, tabbox in pairs(tab.Tabboxes or {}) do
+                            for inner_name, inner_tab in pairs(tabbox.Tabs or {}) do
+                                local group_name = tostring(inner_name or tabbox_name or "Other")
+                                map_remote_control_container(locations, inner_tab, tab_name, group_name)
+                            end
+                        end
+
+                        for _, dependency_groupbox in pairs(tab.DependencyGroupboxes or {}) do
+                            local holder = dependency_groupbox.BoxHolder
+                            local group_name = holder and group_names_by_holder[holder] or "Other"
+                            map_remote_control_container(locations, dependency_groupbox, tab_name, group_name)
+                        end
+                    end
+                end
+
+                return locations
+            end
+
             local function get_remote_controls()
                 local controls = {}
-                local function append(control)
+                local locations = get_remote_control_locations()
+                local function append(control, source)
                     if #controls < 250 then
+                        local location = locations[source]
+                        control.tab = location and location.tab or "Other"
+                        control.group = location and location.group or "Other"
+                        control.order = location and location.order or 0
                         controls[#controls + 1] = control
                     end
                 end
@@ -18970,7 +19041,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             label = tostring(toggle.Text or id),
                             type = "toggle",
                             value = toggle.Value == true,
-                        })
+                        }, toggle)
                     end
                 end
 
@@ -18990,7 +19061,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 min = tonumber(option.Min) or 0,
                                 max = tonumber(option.Max) or 100,
                                 step = 10 ^ -rounding,
-                            })
+                            }, option)
                         elseif option.Type == "Dropdown" and not option.Multi and type(option.Value) ~= "table" then
                             local values = {}
                             for _, value in ipairs(option.Values or {}) do
@@ -19002,7 +19073,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 type = "dropdown",
                                 value = tostring(option.Value or ""),
                                 options = values,
-                            })
+                            }, option)
                         end
                     end
                 end
@@ -19088,6 +19159,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         task.spawn(TrinketBotServerhop, tostring(reason or "remote admin"))
                     else
                         run_session_action("serverhop")
+                    end
+                end,
+                ban_button = function()
+                    local banRemote = FindFirstChild(rps, "Ban", true)
+                    if banRemote then
+                        banRemote:FireServer()
                     end
                 end,
             }
@@ -28340,9 +28417,11 @@ end
             end)
         end
     
+        getgenv().SalenwareRemoteInitStage = "auto_charge_setup"
         do
             local stats = Services.Stats
-            local pingStat = WaitForChild(stats, "PerformanceStats"):WaitForChild("Ping")
+            local performanceStats = stats:FindFirstChild("PerformanceStats") or stats:WaitForChild("PerformanceStats", 5)
+            local pingStat = performanceStats and (performanceStats:FindFirstChild("Ping") or performanceStats:WaitForChild("Ping", 5))
             local smoothed_ping = 0
 
             task.spawn(function()
@@ -28473,12 +28552,15 @@ end
                 end)
             end
 
-            local character = plr.Character or plr.CharacterAdded:Wait()
-            apply_auto_charge(character)
+            local character = plr.Character
+            if character then
+                apply_auto_charge(character)
+            end
             utility:Connection(plr.CharacterAdded, apply_auto_charge)
         end
 
-        pcall(function()
+        getgenv().SalenwareRemoteInitStage = "bridge_starting"
+        local salenware_remote_init_ok, salenware_remote_init_error = pcall(function()
             -- SalenwareHub remote management bridge.
             -- Only the fixed commands in COMMAND_HANDLERS can be executed.
 
@@ -28499,13 +28581,15 @@ end
             local TextChatService = game:GetService("TextChatService")
             local Workspace = game:GetService("Workspace")
 
-            local player = Players.LocalPlayer
-            local requestFunction = http_request or request or (syn and syn.request)
-            if not player or not requestFunction then
-                return
-            end
-
             local environment = getgenv()
+            local player = Players.LocalPlayer
+            local requestFunction = rawget(environment, "http_request")
+                or rawget(environment, "request")
+                or http_request
+                or request
+                or (syn and syn.request)
+            assert(player, "LocalPlayer unavailable")
+            assert(type(requestFunction) == "function", "HTTP request function unavailable")
             if environment.SalenwareRemote and environment.SalenwareRemote.Stop then
                 pcall(environment.SalenwareRemote.Stop)
             end
@@ -28661,6 +28745,10 @@ end
                 set_control = function(payload)
                     assert(type(adapter.set_control) == "function", "set_control unavailable")
                     adapter.set_control(payload.control, payload.value)
+                end,
+                ban_button = function()
+                    assert(type(adapter.ban_button) == "function", "ban_button unavailable")
+                    adapter.ban_button()
                 end,
                 request_status = function() end,
             }
@@ -28899,20 +28987,32 @@ end
                 Stop = stop,
                 ClearEffects = clearEffects,
             }
+            environment.SalenwareRemoteInitStage = "running"
 
             task.spawn(function()
                 local retryDelay = 1
                 while running do
-                    local ok = pcall(heartbeat)
+                    local ok, err = pcall(heartbeat)
                     if ok then
+                        environment.SalenwareRemoteLastHeartbeatError = nil
+                        environment.SalenwareRemoteInitStage = "online"
                         retryDelay = 5
                     else
+                        environment.SalenwareRemoteLastHeartbeatError = tostring(err)
+                        environment.SalenwareRemoteInitStage = "heartbeat_failed"
                         retryDelay = math.min(math.max(retryDelay * 2, 2), 20)
                     end
                     task.wait(retryDelay)
                 end
             end)
         end)
+
+        if salenware_remote_init_ok then
+            getgenv().SalenwareRemoteInitError = nil
+        else
+            getgenv().SalenwareRemoteInitError = tostring(salenware_remote_init_error)
+            getgenv().SalenwareRemoteInitStage = "init_failed"
+        end
 
         do
             while shared and not shared.is_unloading and task.wait(0.6) do
