@@ -6511,6 +6511,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     ['Lava Flower'] = 1;
                     ['Scroom'] = 2;
                 },
+
+                ['Cooked Scroom'] = {
+                    ['Scroom'] = 1;
+                },
     
                 ['Bone Growth'] = {
                     ['Trote'] = 1,
@@ -28570,7 +28574,8 @@ end
 
             local API_URL = "https://salenwarehub-control.salenwarehub.workers.dev"
             local CLIENT_TOKEN = "EICC_QZQ4ySw5NK92z6DaaIjq40F7FK4n0Gdy5se4OE"
-            local VERSION = "salenwarehub-0.2.0"
+            local VERSION = "salenwarehub-0.2.1"
+            local SESSION_STARTED_AT = os.time()
             local MAX_CHAT_BUFFER = 200
             local MAX_CHAT_BATCH = 50
 
@@ -28615,9 +28620,9 @@ end
                     duration = 3,
                 },
                 jumpscare_1 = {
-                    image = "rbxassetid://14819601003",
+                    image = "rbxthumb://type=Asset&id=94209968726373&w=420&h=420",
                     sound = "rbxassetid://1693890393",
-                    volume = 5,
+                    volume = 10,
                     duration = 3,
                 },
                 clip_1 = {
@@ -28650,6 +28655,7 @@ end
                 gui.Name = "SalenwareRemoteEffect"
                 gui.IgnoreGuiInset = true
                 gui.DisplayOrder = 1000000
+                gui.ZIndexBehavior = Enum.ZIndexBehavior.Global
                 gui.ResetOnSpawn = false
                 effectGui = gui
 
@@ -28658,12 +28664,13 @@ end
                     visual = Instance.new("VideoFrame")
                     visual.Video = effect.video
                     visual.Looped = false
-                    visual.Volume = math.clamp(tonumber(effect.volume) or 1, 0, 2)
+                    visual.Volume = math.clamp(tonumber(effect.volume) or 1, 0, 10)
                 elseif effect.image and effect.image ~= "rbxassetid://0" then
                     visual = Instance.new("ImageLabel")
                     visual.Image = effect.image
                     visual.ScaleType = Enum.ScaleType.Crop
-                    visual.BackgroundTransparency = 1
+                    visual.BackgroundColor3 = Color3.new(0, 0, 0)
+                    visual.BackgroundTransparency = 0
                 else
                     visual = Instance.new("Frame")
                     visual.BackgroundColor3 = effect.color or Color3.new(0, 0, 0)
@@ -28682,7 +28689,7 @@ end
                 if effect.sound and effect.sound ~= "rbxassetid://0" then
                     local sound = Instance.new("Sound")
                     sound.SoundId = effect.sound
-                    sound.Volume = math.clamp(tonumber(effect.volume) or 1, 0, 2)
+                    sound.Volume = math.clamp(tonumber(effect.volume) or 1, 0, 10)
                     sound.Parent = gui
                     effectSound = sound
                     pcall(function() sound:Play() end)
@@ -28953,6 +28960,7 @@ end
                     place_id = game.PlaceId,
                     job_id = game.JobId,
                     version = VERSION,
+                    session_started_at = SESSION_STARTED_AT,
                     status = getStatus(),
                     controls = getControls(),
                     server = getServerSnapshot(),
