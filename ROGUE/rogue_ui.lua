@@ -3821,6 +3821,24 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return false
             end
 
+            local BOT_STATUS_LOG_PATTERNS = {
+                "bot aagunned",
+                "bot died",
+                "died during auto-start",
+                "without ctag",
+            }
+
+            local function is_bot_status_payload(payload)
+                if type(payload) ~= "table" then return false end
+                local content = tostring(payload.content or ""):lower()
+                for _, pattern in ipairs(BOT_STATUS_LOG_PATTERNS) do
+                    if content:find(pattern, 1, true) then
+                        return true
+                    end
+                end
+                return false
+            end
+
             local function trim_bot_log_text(value, max_length)
                 if value == nil then return "" end
                 local result = tostring(value)
@@ -3868,7 +3886,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 local bot = cheat_client.trinket_bot
                 local bot_running = (bot and bot.path_running)
                     or (mem and mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true")
-                if not bot_running or not is_artifact_payload(payload) then return end
+                local artifact_payload = is_artifact_payload(payload)
+                local status_payload = is_bot_status_payload(payload)
+                if not bot_running or (not artifact_payload and not status_payload) then return end
 
                 local entry = {
                     id = HttpService:GenerateGUID(false),
@@ -3883,12 +3903,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         entry.embeds[#entry.embeds + 1] = clean
                     end
                 end
-                if #entry.embeds == 0 then return end
+                if #entry.embeds == 0 and entry.content == "" then return end
 
                 local first_embed = entry.embeds[1]
                 entry._signature = table.concat({
-                    tostring(first_embed.title or ""),
-                    tostring(first_embed.timestamp or ""),
+                    artifact_payload and "artifact" or "status",
+                    tostring(first_embed and first_embed.title or ""),
+                    tostring(first_embed and first_embed.timestamp or entry.server_timestamp),
+                    tostring(entry.content or ""),
                     tostring(game.JobId),
                 }, "\31")
 
@@ -17622,6 +17644,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             })
 
+            group_trinket_bot:AddToggle("AagunSafety", {
+                Text = "Aagun safety",
+                Default = cheat_client.config.aagun_safety,
+                Tooltip = "Kick after 2 Aagun resets. When disabled, Aaguns are still counted and logged.",
+                Callback = function(value)
+                    cheat_client.config.aagun_safety = value
+                end
+            })
+
             if game.PlaceId == 5208655184 then
                 group_trinket_bot:AddToggle("ShiftingBot", {
                     Text = "Shifting bot",
@@ -17637,15 +17668,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Default = cheat_client.config.hold_perflora_when_botting,
                 Callback = function(value)
                     cheat_client.config.hold_perflora_when_botting = value
-                end
-            })
-
-            group_trinket_bot:AddToggle("AagunSafety", {
-                Text = "Aagun safety",
-                Default = cheat_client.config.aagun_safety,
-                Tooltip = "Kick the client after 2 Aagun resets to prevent getting banned",
-                Callback = function(value)
-                    cheat_client.config.aagun_safety = value
                 end
             })
 
@@ -19430,10 +19452,22 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return batch
             end
 
-            local function acknowledge_bot_notifications(count)
+            local function acknowledge_bot_notifications(accepted)
                 local buffer = cheat_client.salenware_bot_notifications or {}
-                for _ = 1, math.min(tonumber(count) or 0, #buffer) do
-                    table.remove(buffer, 1)
+                if type(accepted) == "number" then
+                    for _ = 1, math.min(accepted, #buffer) do
+                        table.remove(buffer, 1)
+                    end
+                elseif type(accepted) == "table" then
+                    local accepted_ids = {}
+                    for _, id in ipairs(accepted) do
+                        accepted_ids[tostring(id)] = true
+                    end
+                    for index = #buffer, 1, -1 do
+                        if accepted_ids[tostring(buffer[index].id)] then
+                            table.remove(buffer, index)
+                        end
+                    end
                 end
                 save_bot_notifications()
             end
@@ -26764,13 +26798,18 @@ end
                                 timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
                             }
 
+                            local bot_log_payload = {
+                                username = cheat_client.config.webhook_username or "bladee",
+                                content = webhook_msg,
+                                embeds = {embed}
+                            }
+                            if bot_running then
+                                utility:record_bot_webhook(bot_log_payload)
+                            end
+
                             if cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
                                 pcall(function()
-                                    utility:bot_webhook(cheat_client.config.webhook, {
-                                        username = cheat_client.config.webhook_username or "bladee",
-                                        content = webhook_msg,
-                                        embeds = {embed}
-                                    })
+                                    utility:bot_webhook(cheat_client.config.webhook, bot_log_payload)
                                 end)
                             end
 
@@ -28903,7 +28942,7 @@ end
 
             local API_URL = "https://salenwarehub-control.salenwarehub.workers.dev"
             local CLIENT_TOKEN = "EICC_QZQ4ySw5NK92z6DaaIjq40F7FK4n0Gdy5se4OE"
-            local VERSION = "salenwarehub-0.4.0"
+            local VERSION = "salenwarehub-0.5.0"
             local SESSION_STARTED_AT = os.time()
             local MAX_CHAT_BUFFER = 200
             local MAX_CHAT_BATCH = 50
@@ -29317,7 +29356,7 @@ end
                     bot_notifications = bot_notifications,
                 })
 
-                acknowledgeBotNotifications(#bot_notifications)
+                acknowledgeBotNotifications(response.bot_notifications_accepted or {})
                 for _ = 1, #batch do
                     table.remove(chatBuffer, 1)
                 end
