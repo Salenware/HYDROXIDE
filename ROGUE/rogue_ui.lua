@@ -14652,9 +14652,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             local AAGUN_STOP_COUNT = 2
             local AAGUN_COUNT_KEY = "aagun_session_count"
-            local AAGUN_PATH_RADIUS = 30
+            trinket_bot.aagun_path_radius = 30
 
-            local function distance_to_path_segment(position, segment_start, segment_end)
+            function trinket_bot.distance_to_path_segment(position, segment_start, segment_end)
                 local segment = segment_end - segment_start
                 local segment_length_squared = segment:Dot(segment)
                 if segment_length_squared <= 0 then
@@ -14666,7 +14666,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return (position - closest_position).Magnitude
             end
 
-            local function is_near_bot_path(position)
+            function trinket_bot.is_near_bot_path(position)
                 if typeof(position) ~= "Vector3" or #trinket_bot.path_points == 0 then
                     return false
                 end
@@ -14675,12 +14675,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 for _, point in ipairs(trinket_bot.path_points) do
                     local point_position = point and point.position
                     if typeof(point_position) == "Vector3" then
-                        if (position - point_position).Magnitude <= AAGUN_PATH_RADIUS then
+                        if (position - point_position).Magnitude <= trinket_bot.aagun_path_radius then
                             return true
                         end
 
                         if previous_position
-                            and distance_to_path_segment(position, previous_position, point_position) <= AAGUN_PATH_RADIUS
+                            and trinket_bot.distance_to_path_segment(position, previous_position, point_position) <= trinket_bot.aagun_path_radius
                         then
                             return true
                         end
@@ -14692,7 +14692,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return false
             end
 
-            local function get_death_position(character, root_hint)
+            function trinket_bot.get_death_position(character, root_hint)
                 local root = root_hint or (character and FindFirstChild(character, "HumanoidRootPart"))
                 if not root then
                     return nil
@@ -14720,7 +14720,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return false, nil, true, false
                 end
 
-                if not is_near_bot_path(death_position) then
+                if not trinket_bot.is_near_bot_path(death_position) then
                     return false, nil, false, false
                 end
 
@@ -14923,7 +14923,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 pcall(function() death_connection:Disconnect() end)
                             end
 
-                            local death_position = get_death_position(character, root)
+                            local death_position = trinket_bot.get_death_position(character, root)
                             trinket_bot.path_running = false
                             pcall(function() library:Notify("Path stopped due to death") end)
 
@@ -18156,7 +18156,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         auto_start_death_connection = nil
                                     end
 
-                                    local death_position = get_death_position(character)
+                                    local death_position = trinket_bot.get_death_position(character)
                                     local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
                                     local died_with_danger = character and cs:HasTag(character, "Danger")
                                     if stay_in_server and died_with_danger then
