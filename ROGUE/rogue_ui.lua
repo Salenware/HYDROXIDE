@@ -14652,6 +14652,57 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             local AAGUN_STOP_COUNT = 2
             local AAGUN_COUNT_KEY = "aagun_session_count"
+            local AAGUN_PATH_RADIUS = 30
+
+            local function distance_to_path_segment(position, segment_start, segment_end)
+                local segment = segment_end - segment_start
+                local segment_length_squared = segment:Dot(segment)
+                if segment_length_squared <= 0 then
+                    return (position - segment_start).Magnitude
+                end
+
+                local alpha = math.clamp((position - segment_start):Dot(segment) / segment_length_squared, 0, 1)
+                local closest_position = segment_start + segment * alpha
+                return (position - closest_position).Magnitude
+            end
+
+            local function is_near_bot_path(position)
+                if typeof(position) ~= "Vector3" or #trinket_bot.path_points == 0 then
+                    return false
+                end
+
+                local previous_position
+                for _, point in ipairs(trinket_bot.path_points) do
+                    local point_position = point and point.position
+                    if typeof(point_position) == "Vector3" then
+                        if (position - point_position).Magnitude <= AAGUN_PATH_RADIUS then
+                            return true
+                        end
+
+                        if previous_position
+                            and distance_to_path_segment(position, previous_position, point_position) <= AAGUN_PATH_RADIUS
+                        then
+                            return true
+                        end
+
+                        previous_position = point_position
+                    end
+                end
+
+                return false
+            end
+
+            local function get_death_position(character, root_hint)
+                local root = root_hint or (character and FindFirstChild(character, "HumanoidRootPart"))
+                if not root then
+                    return nil
+                end
+
+                local success, position = pcall(function()
+                    return root.Position
+                end)
+                return success and position or nil
+            end
 
             local function record_aagun_reset()
                 local count = 0
@@ -14663,10 +14714,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return count
             end
 
-            local function handle_no_ctag_bot_death()
+            local function handle_no_ctag_bot_death(death_position)
                 if cheat_client.manual_reset_pending then
                     cheat_client.manual_reset_pending = nil
-                    return false, nil, true
+                    return false, nil, true, false
+                end
+
+                if not is_near_bot_path(death_position) then
+                    return false, nil, false, false
                 end
 
                 local count = record_aagun_reset()
@@ -14684,10 +14739,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end)
                     task.wait(0.3)
                     plr:Kick("bot aagunned twice - kicking")
-                    return true, count, false
+                    return true, count, false, true
                 end
 
-                return false, count, false
+                return false, count, false, true
             end
             local function ExecutePath(test_mode)
                 if not cheat_client or not cheat_client.config then
@@ -14868,6 +14923,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 pcall(function() death_connection:Disconnect() end)
                             end
 
+                            local death_position = get_death_position(character, root)
                             trinket_bot.path_running = false
                             pcall(function() library:Notify("Path stopped due to death") end)
 
@@ -14880,14 +14936,16 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     pcall(function() library:Notify("You died (stay in server - not kicking)") end)
                                     pcall(function() utility:plain_webhook("@here bot died (stay in server mode)") end)
                                 else
-                                    local stopped, count, manual_reset = handle_no_ctag_bot_death()
+                                    local stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position)
                                     if not stopped then
                                         if manual_reset then
                                             pcall(function() utility:plain_webhook("@here bot manually reset (stay in server mode)") end)
-                                        else
+                                        elseif is_aagun then
                                             pcall(function()
                                                 utility:plain_webhook(string.format("@here bot aagunned %d time(s) (stay in server mode)", count))
                                             end)
+                                        else
+                                            pcall(function() utility:plain_webhook("@here bot died without ctag (stay in server mode)") end)
                                         end
                                     end
                                 end
@@ -14899,20 +14957,24 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         task.wait(0.3)
                                         plr:Kick("bot died")
                                     else
-                                        local stopped, count, manual_reset = handle_no_ctag_bot_death()
+                                        local stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position)
                                         if stopped then
                                             return
                                         end
 
                                         if manual_reset then
                                             pcall(function() utility:plain_webhook("@here bot manually reset, server hopping") end)
-                                        else
+                                        elseif is_aagun then
                                             pcall(function()
                                                 utility:plain_webhook(string.format("@here bot aagunned %d time(s), server hopping", count))
                                             end)
+                                        else
+                                            pcall(function() utility:plain_webhook("@here bot died without ctag, server hopping") end)
                                         end
                                         task.wait(15)
-                                        TrinketBotServerhop(manual_reset and "bot manually reset, server hopping" or "bot aagunned, server hopping")
+                                        local serverhop_reason = manual_reset and "bot manually reset, server hopping"
+                                            or (is_aagun and "bot aagunned, server hopping" or "bot died without ctag, server hopping")
+                                        TrinketBotServerhop(serverhop_reason)
                                     end
                                 end)
                             end
@@ -18094,13 +18156,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         auto_start_death_connection = nil
                                     end
 
+                                    local death_position = get_death_position(character)
                                     local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
                                     local died_with_danger = character and cs:HasTag(character, "Danger")
                                     if stay_in_server and died_with_danger then
                                         pcall(function() library:Notify("Died during auto-start (stay in server mode)") end)
                                         pcall(function() utility:plain_webhook("@here Bot died during auto-start (stay in server mode)") end)
                                     elseif not died_with_danger then
-                                        local stopped, count, manual_reset = handle_no_ctag_bot_death()
+                                        local stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position)
                                         if stopped then
                                             return
                                         end
@@ -18108,21 +18171,27 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         if stay_in_server then
                                             if manual_reset then
                                                 pcall(function() utility:plain_webhook("@here Bot manually reset during auto-start (stay in server mode)") end)
-                                            else
+                                            elseif is_aagun then
                                                 pcall(function()
                                                     utility:plain_webhook(string.format("@here Bot aagunned %d time(s) during auto-start (stay in server mode)", count))
                                                 end)
+                                            else
+                                                pcall(function() utility:plain_webhook("@here Bot died without ctag during auto-start (stay in server mode)") end)
                                             end
                                         else
                                             if manual_reset then
                                                 pcall(function() utility:plain_webhook("@here Bot manually reset during auto-start - serverhopping") end)
-                                            else
+                                            elseif is_aagun then
                                                 pcall(function()
                                                     utility:plain_webhook(string.format("@here Bot aagunned %d time(s) during auto-start - serverhopping", count))
                                                 end)
+                                            else
+                                                pcall(function() utility:plain_webhook("@here Bot died without ctag during auto-start - serverhopping") end)
                                             end
                                             task.wait(15)
-                                            TrinketBotServerhop(manual_reset and "Bot manually reset during auto-start" or "Bot aagunned during auto-start")
+                                            local serverhop_reason = manual_reset and "Bot manually reset during auto-start"
+                                                or (is_aagun and "Bot aagunned during auto-start" or "Bot died without ctag during auto-start")
+                                            TrinketBotServerhop(serverhop_reason)
                                         end
                                     else
                                         pcall(function() library:Notify("Died during auto-start - kicking") end)
@@ -27085,30 +27154,81 @@ end
             local holdingF = false
             local last_block_time = 0
 
+            local function get_hold_block_remotes()
+                local character = plr.Character
+                local handler = character and FindFirstChild(character, "CharacterHandler")
+                local remotes = handler and FindFirstChild(handler, "Remotes")
+                return remotes and FindFirstChild(remotes, "Block"),
+                    remotes and FindFirstChild(remotes, "Unblock")
+            end
+
+            local function send_hold_unblock()
+                local _, unblock_remote = get_hold_block_remotes()
+                if unblock_remote then
+                    pcall(function()
+                        unblock_remote:FireServer({})
+                    end)
+                end
+            end
+
+            local function sync_manual_block_state()
+                if not (Toggles and Toggles.HoldBlock and Toggles.HoldBlock.Value) then
+                    return
+                end
+
+                local character = plr.Character
+                local has_no_control = character ~= nil
+                    and FindFirstChild(character, "NoControl") ~= nil
+                holdingF = uis:IsKeyDown(Enum.KeyCode.F)
+                    and character ~= nil
+                    and not has_no_control
+
+                if not holdingF and not has_no_control then
+                    send_hold_unblock()
+                end
+            end
+
+            cheat_client.sync_hold_block_state = sync_manual_block_state
+
             local function start_hold_block()
                 if cheat_client.feature_connections.hold_block then return end
 
                 cheat_client.feature_connections.hold_block_input_began = utility:Connection(uis.InputBegan, function(input, processed)
                     if not processed and input.KeyCode == Enum.KeyCode.F then
+                        if cheat_client.auto_parry_sending_block then
+                            return
+                        end
+
+                        if plr.Character and FindFirstChild(plr.Character, "NoControl") then
+                            holdingF = false
+                            return
+                        end
+
                         holdingF = true
                     end
                 end)
 
                 cheat_client.feature_connections.hold_block_input_ended = utility:Connection(uis.InputEnded, function(input, processed)
                     if input.KeyCode == Enum.KeyCode.F then
+                        if cheat_client.auto_parry_sending_block then
+                            return
+                        end
+
                         holdingF = false
+                        if not (plr.Character and FindFirstChild(plr.Character, "NoControl")) then
+                            send_hold_unblock()
+                        end
                     end
                 end)
 
                 cheat_client.feature_connections.hold_block = utility:Connection(rs.RenderStepped, LPH_NO_VIRTUALIZE(function()
-                    if holdingF and plr.Character then
+                    local character = plr.Character
+                    if holdingF and character and not FindFirstChild(character, "NoControl") then
                         local delay = ((Options and Options.HoldBlockDelay and Options.HoldBlockDelay.Value) or 0) / 1000
                         local now = tick()
 
                         if now - last_block_time >= delay then
-                            local remote = plr.Character:FindFirstChild("CharacterHandler")
-                                and plr.Character.CharacterHandler:FindFirstChild("Remotes")
-                                and plr.Character.CharacterHandler.Remotes:FindFirstChild("Block")
+                            local remote = get_hold_block_remotes()
 
                             if remote then
                                 pcall(function()
@@ -27123,6 +27243,9 @@ end
 
             local function stop_hold_block()
                 holdingF = false
+                if not (plr.Character and FindFirstChild(plr.Character, "NoControl")) then
+                    send_hold_unblock()
+                end
 
                 if cheat_client.feature_connections.hold_block then
                     cheat_client.feature_connections.hold_block:Disconnect()
@@ -27494,6 +27617,7 @@ end
 
         do
             local DETECTION_RANGE = 30
+            local SNARVINDUR_DETECTION_RANGE = 22
             local AUTO_PARRY_COOLDOWN = 0.1
             local LAST_PARRY = 0
             local EARTH_PILLAR_PARRY_DISTANCE = 10
@@ -27750,10 +27874,22 @@ end
                         unblockInputs()
                     end)
                 elseif useVim or not (blockRemote and unblockRemote) then
+                    local physicalBlockHeld = uis:IsKeyDown(Enum.KeyCode.F)
+                    local alreadyBlocking = FindFirstChild(plr.Character, "Blocking") ~= nil
+                    if physicalBlockHeld or alreadyBlocking or cheat_client.auto_parry_sending_block then
+                        return
+                    end
+
                     task.spawn(function()
+                        cheat_client.auto_parry_sending_block = true
                         vim:SendKeyEvent(true, Enum.KeyCode.F, false, game)
                         task.wait(blockDuration)
                         vim:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+                        cheat_client.auto_parry_sending_block = false
+
+                        if cheat_client.sync_hold_block_state then
+                            cheat_client.sync_hold_block_state()
+                        end
                     end)
                 else
                     blockRemote:FireServer(false)
@@ -27863,7 +27999,7 @@ end
                                         end)
                                     end
                                 end
-                            elseif sound.Name == "PerfectCast" and shared and Toggles and Toggles.AutoPerfectBlock and Toggles.AutoPerfectBlock.Value and Options.ParryAbilities.Value["Snarvindur"] and FindFirstChild(character, "Snarvindur") and not is_local_player_grappled() then
+                            elseif sound.Name == "PerfectCast" and distance <= SNARVINDUR_DETECTION_RANGE and shared and Toggles and Toggles.AutoPerfectBlock and Toggles.AutoPerfectBlock.Value and Options.ParryAbilities.Value["Snarvindur"] and FindFirstChild(character, "Snarvindur") and not is_local_player_grappled() then
                                 task.spawn(function()
                                     if shared then
                                         performAutoParry(0, SNARVINDUR_BLOCK_DURATION, true, player, true)
