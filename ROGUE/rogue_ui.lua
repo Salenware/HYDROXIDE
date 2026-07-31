@@ -971,6 +971,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             8791234913,
             2260532477,
             677317511,
+            2812528388,
+            56746289,
         },
         aimbot = {
             aimkey_translation = {
@@ -2446,23 +2448,28 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 task.wait(base_time + (smoothed_ping / 1000) * multiplier)
             end
 
-            local function can_use_mana()
-                local character = plr.Character
-                if not character then return end
+            local function can_use_mana(character)
+                character = character or plr.Character
+                if not character then return false, "character missing" end
 
-                if FindFirstChild(character, 'Grabbed') then return end
-                if FindFirstChild(character, 'Climbing') then return end
-                if FindFirstChild(character, 'ClimbCoolDown') then return end
+                for _, child_name in ipairs({
+                    "Grabbed",
+                    "Climbing",
+                    "ClimbCoolDown",
+                    "ManaStop",
+                    "SpellBlocking",
+                    "ActiveCast",
+                    "Stun",
+                }) do
+                    if FindFirstChild(character, child_name) then
+                        return false, child_name
+                    end
+                end
 
-                if FindFirstChild(character, 'ManaStop') then return end
-                if FindFirstChild(character, 'SpellBlocking') then return end
-                if FindFirstChild(character, 'ActiveCast') then return end
-                if FindFirstChild(character, 'Stun') then return end
+                if cs:HasTag(character, "Knocked") then return false, "Knocked" end
+                if cs:HasTag(character, "Unconscious") then return false, "Unconscious" end
 
-                if cs:HasTag(character, 'Knocked') then return end
-                if cs:HasTag(character, 'Unconscious') then return end
-
-                return true
+                return true, nil
             end
 
             function utility:charge_mana()
@@ -2487,18 +2494,26 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             function utility:charge_mana_until(amount, timeout, should_abort)
                 local character = plr.Character
-                if not character or FindFirstChildWhichIsA(character, 'ForceField') or not can_use_mana() then
-                    warn('mana unavailable', can_use_mana())
-                    return false
+                local mana_available, initial_block_reason = can_use_mana(character)
+                if not character then
+                    return false, initial_block_reason
+                end
+                if FindFirstChildWhichIsA(character, 'ForceField') then
+                    return false, "ForceField"
+                end
+                if not mana_available then
+                    warn('mana unavailable', initial_block_reason)
+                    return false, initial_block_reason
                 end
 
                 local mana = FindFirstChild(character, 'Mana')
-                if not mana then return false end
+                if not mana then return false, "Mana missing" end
 
                 local target = math.clamp(amount, 0, 98)
                 local charge_started = tick()
                 local last_progress = charge_started
                 local last_mana = mana.Value
+                local stop_reason = nil
 
                 if FindFirstChild(character, 'Charge') then
                     utility:decharge_mana()
@@ -2509,14 +2524,23 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 while utility and shared and not shared.is_unloading and mana.Value < target do
                     if should_abort and should_abort() then
+                        stop_reason = "abort callback"
                         break
                     end
 
-                    if timeout and (tick() - charge_started >= timeout or tick() - last_progress >= 4) then
+                    if timeout and tick() - charge_started >= timeout then
+                        stop_reason = "total timeout"
                         break
                     end
 
-                    if timeout and not can_use_mana() then
+                    if timeout and tick() - last_progress >= 4 then
+                        stop_reason = "stalled for 4s"
+                        break
+                    end
+
+                    local can_charge, block_reason = can_use_mana(character)
+                    if timeout and not can_charge then
+                        stop_reason = block_reason
                         break
                     end
 
@@ -2533,6 +2557,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
 
+                local reached_target = mana.Value >= target
+
                 if utility and FindFirstChild(character, 'Charge') then
                     utility:decharge_mana()
                     if not Toggles.SnapTrain or not Toggles.SnapTrain.Value then
@@ -2540,7 +2566,21 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
 
-                return mana.Value >= target
+                if reached_target then
+                    return true, "target reached"
+                end
+
+                if not stop_reason then
+                    if not utility then
+                        stop_reason = "utility unavailable"
+                    elseif not shared or shared.is_unloading then
+                        stop_reason = "script unloading"
+                    else
+                        stop_reason = "charge stopped"
+                    end
+                end
+
+                return false, stop_reason
             end
         end
 
@@ -3456,6 +3496,21 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
                     end
                 end
+            end
+
+            function cheat_client:is_lich_player(player)
+                if not player then
+                    return false
+                end
+
+                local first_name = player:GetAttribute("FirstName")
+                if not first_name or first_name == "" or first_name == "nil" then
+                    local leaderstats = FindFirstChild(player, "leaderstats")
+                    local first_name_value = leaderstats and FindFirstChild(leaderstats, "FirstName")
+                    first_name = first_name_value and first_name_value.Value or nil
+                end
+
+                return first_name ~= nil and lich_names[tostring(first_name)] == true
             end
 
             task.spawn(load_name_lists)
@@ -7007,6 +7062,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         do
             local function is_moderator(player)
                 if cheat_client and cheat_client.mod_list and table.find(cheat_client.mod_list, player.UserId) then
+                    return true
+                end
+
+                if cheat_client and cheat_client.is_lich_player and cheat_client:is_lich_player(player) then
                     return true
                 end
 
@@ -13092,7 +13151,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return false
                 end
 
-                if shared.is_unloading or trinket_bot.gate_in_progress or emergency_gate_requested or trinket_bot.moderator_detected then
+                if shared.is_unloading or trinket_bot.gate_in_progress or trinket_bot.gate_sequence_in_progress or emergency_gate_requested or trinket_bot.moderator_detected then
                     return false
                 end
 
@@ -13264,7 +13323,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return false
                 end
 
-                if shared.is_unloading or trinket_bot.gate_in_progress or emergency_gate_requested or trinket_bot.moderator_detected then
+                if shared.is_unloading or trinket_bot.gate_in_progress or trinket_bot.gate_sequence_in_progress or emergency_gate_requested or trinket_bot.moderator_detected then
                     return false
                 end
 
@@ -13305,7 +13364,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return false
                 end
 
-                if currently_dropping or trinket_bot.gate_in_progress or trinket_bot.priority_tool_action or emergency_gate_requested or trinket_bot.moderator_detected then
+                if currently_dropping or trinket_bot.gate_in_progress or trinket_bot.gate_sequence_in_progress or trinket_bot.priority_tool_action or emergency_gate_requested or trinket_bot.moderator_detected then
                     return false
                 end
 
@@ -13521,7 +13580,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             local function Gate(where, expected_destination)
                 trinket_bot.gate_in_progress = true
-                local gate_ok, gate_result = pcall(function()
+                local gate_ok, gate_result, gate_failure_reason = pcall(function()
                 if not trinket_bot.path_running then
                     return false
                 end
@@ -13530,6 +13589,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     library:Notify("Waiting for item drop to complete before gating...")
                     while currently_dropping and trinket_bot.path_running do
                         task.wait(0.1)
+                    end
+
+                    if not trinket_bot.path_running then
+                        return false
                     end
 
                     local character = plr.Character
@@ -13638,6 +13701,29 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         if not CollectionService:HasTag(plr.Character, "SnapCool") and not cs:HasTag(plr.Character, "Danger") then
                             library:Notify("SnapCool expired - proceeding with gate")
                         end
+                    end
+                end
+
+                if plr.Character and FindFirstChild(plr.Character, "GateOut") then
+                    local gateout_wait_start = tick()
+
+                    while plr.Character
+                        and FindFirstChild(plr.Character, "GateOut")
+                        and tick() - gateout_wait_start < 30
+                        and trinket_bot.path_running
+                        and not emergency_gate_requested
+                        and not trinket_bot.moderator_detected
+                    do
+                        task.wait(0.1)
+                    end
+
+                    if not trinket_bot.path_running or emergency_gate_requested or trinket_bot.moderator_detected then
+                        return false
+                    end
+
+                    if plr.Character and FindFirstChild(plr.Character, "GateOut") then
+                        library:Notify("Gate cooldown did not clear within 30s")
+                        return false
                     end
                 end
 
@@ -13811,21 +13897,21 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 warn("Gate teleportation failed: NoFall not found after 2.5s")
-                return false
+                return false, "no_teleport"
                 end)
 
                 trinket_bot.gate_in_progress = false
 
                 if not gate_ok then
                     warn("Gate error:", gate_result)
-                    return false
+                    return false, "gate_error"
                 end
 
                 if gate_result == true then
                     trinket_bot.idle_bait_after_gate = true
                 end
 
-                return gate_result == true
+                return gate_result == true, gate_failure_reason
             end
 
             local function CheckForTrinkets()
@@ -14023,6 +14109,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if not player then return false end
 
                 if cheat_client and cheat_client.mod_list and table.find(cheat_client.mod_list, player.UserId) then
+                    return true
+                end
+
+                if cheat_client and cheat_client.is_lich_player and cheat_client:is_lich_player(player) then
                     return true
                 end
 
@@ -14744,13 +14834,42 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 return false, count, false, true
             end
-            local function ExecutePath(test_mode)
+            local function ExecutePath(test_mode, gate_recovery_resume)
                 if not cheat_client or not cheat_client.config then
                     return
                 end
 
                 test_mode = test_mode or false
                 trinket_bot.test_mode = test_mode
+
+                if not gate_recovery_resume then
+                    trinket_bot.gate_recovery_count = 0
+                    trinket_bot.gate_recovery_path_points = {}
+                    for path_index, path_point in ipairs(trinket_bot.path_points) do
+                        trinket_bot.gate_recovery_path_points[path_index] = table.clone(path_point)
+                    end
+                else
+                    for name, connection in pairs(trinket_bot.connections or {}) do
+                        if connection then
+                            pcall(function() connection:Disconnect() end)
+                        end
+                        trinket_bot.connections[name] = nil
+                    end
+
+                    for _, connection in ipairs(trinket_bot.illu_connections or {}) do
+                        if connection then
+                            pcall(function() connection:Disconnect() end)
+                        end
+                    end
+                    trinket_bot.illu_connections = {}
+
+                    for _, connection in ipairs(trinket_bot.gnav_connections or {}) do
+                        if connection then
+                            pcall(function() connection:Disconnect() end)
+                        end
+                    end
+                    trinket_bot.gnav_connections = {}
+                end
 
                 droppedTools = {}
                 queuedDropTools = {}
@@ -14812,6 +14931,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 trinket_bot.path_running = true
+                trinket_bot.gate_in_progress = false
+                trinket_bot.gate_sequence_in_progress = false
                 trinket_bot.idle_bait_after_gate = false
                 trinket_bot.madrasian_start_shift_attempted = false
                 trinket_bot.madrasian_action_in_progress = false
@@ -14927,6 +15048,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             trinket_bot.path_running = false
                             pcall(function() library:Notify("Path stopped due to death") end)
 
+                            if trinket_bot.gate_recovery_pending then
+                                cheat_client.manual_reset_pending = nil
+                                pcall(function() library:Notify("Gate recovery reset - waiting to restart path") end)
+                                return
+                            end
+
                             local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
                             if test_mode then
                                 pcall(function() library:Notify("You died (test mode - not kicking)") end)
@@ -15018,9 +15145,21 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 mod_connection = track_connection("mod", utility:Connection(Services.Players.PlayerAdded, function(player)
-                    if is_moderator(player) then
-                        handle_moderator_detection(player)
-                    end
+                    task.spawn(function()
+                        local detection_deadline = tick() + 15
+
+                        repeat
+                            if is_moderator(player) then
+                                handle_moderator_detection(player)
+                                return
+                            end
+
+                            task.wait(0.1)
+                        until tick() >= detection_deadline
+                            or not player.Parent
+                            or not trinket_bot.path_running
+                            or trinket_bot.moderator_detected
+                    end)
                 end))
 
                 local glassmask_connection, glassmask_thrown_connection
@@ -16417,6 +16556,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if point.is_gate_point then
                         local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
                         local gate_success = false
+                        local gate_outcome = {
+                            blocked = 0,
+                            attempted = 0,
+                            failed_gate = nil,
+                            failure_reason = nil,
+                        }
 
                         if not stay_in_server then
                             local available_gates = {}
@@ -16471,8 +16616,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 end
 
                                 if destination_blocked then
+                                    gate_outcome.blocked = gate_outcome.blocked + 1
                                     library:Notify(string.format("Gate %d/%d destination blocked by %s - trying next gate", gate_index, #trinket_bot.path_points, blocking_player_name))
                                 else
+                                    gate_outcome.attempted = gate_outcome.attempted + 1
                                     if plr.Character and FindFirstChild(plr.Character, "HumanoidRootPart") then
                                         local bot_pos = plr.Character.HumanoidRootPart.Position
                                         local critical_distance = Options.CriticalDistance and Options.CriticalDistance.Value or 60
@@ -16499,8 +16646,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     local max_retries = 3
                                     local retry_count = 0
 
-                                    local retry_platform = nil
-
+                                    trinket_bot.gate_sequence_in_progress = true
                                     while not gate_success and retry_count < max_retries and trinket_bot.path_running and not emergency_gate_requested and not trinket_bot.moderator_detected do
                                         retry_count = retry_count + 1
 
@@ -16557,43 +16703,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                             end
 
                                             task.wait(0.5)
-
-                                            if not retry_platform then
-                                                character = plr.Character
-
-                                                if character and FindFirstChild(character, "HumanoidRootPart") then
-                                                    local hrp = character.HumanoidRootPart
-
-                                                    retry_platform = Instance.new("Part")
-                                                    retry_platform.Size = Vector3.new(7, 1, 7)
-                                                    retry_platform.Position = hrp.Position + Vector3.new(0, -3, 18)
-                                                    retry_platform.Anchored = true
-                                                    retry_platform.CanCollide = true
-                                                    retry_platform.Transparency = 1
-                                                    retry_platform.Parent = workspace
-
-                                                    local saved_emergency_gate = emergency_gate_requested
-                                                    emergency_gate_requested = nil
-
-                                                    trinket_bot.path_running = true
-                                                    SmoothTeleport(retry_platform.Position + Vector3.new(0, 4, 0))
-                                                    task.wait(1.5)
-
-                                                    if not emergency_gate_requested then
-                                                        emergency_gate_requested = saved_emergency_gate
-                                                    end
-                                                end
-                                            end
                                         end
 
                                         local expected_dest = trinket_bot.path_points[gate_index + 1] and trinket_bot.path_points[gate_index + 1].position or nil
-                                        gate_success = Gate(gate_point.gate_location, expected_dest)
+                                        local gate_failure_reason
+                                        gate_success, gate_failure_reason = Gate(gate_point.gate_location, expected_dest)
+                                        if not gate_success then
+                                            gate_outcome.failed_gate = gate_index
+                                            gate_outcome.failure_reason = gate_failure_reason or "gate_failed"
+                                        end
                                     end
-
-                                    if retry_platform then
-                                        retry_platform:Destroy()
-                                        retry_platform = nil
-                                    end
+                                    trinket_bot.gate_sequence_in_progress = false
 
                                     if gate_success then
                                         current_gate_section = current_gate_section + 1
@@ -16603,7 +16723,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         end
                                         break
                                     else
-                                        library:Notify(string.format("Gate %d failed after %d attempts - trying next gate", gate_index, retry_count))
+                                        library:Notify(string.format("Gate %d failed after %d attempts (%s) - starting recovery", gate_index, retry_count, gate_outcome.failure_reason or "unknown"))
+                                        break
                                     end
                                 end
                             end
@@ -16636,15 +16757,87 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     end
                                 end
 
-                                library:Notify("All gate points blocked or failed - serverhopping")
+                                if gate_outcome.failed_gate then
+                                    local recovery_character = plr.Character
+                                    local recovery_in_danger = recovery_character and cs:HasTag(recovery_character, "Danger")
+                                    trinket_bot.gate_recovery_count = (trinket_bot.gate_recovery_count or 0) + 1
+
+                                    if recovery_in_danger then
+                                        library:Notify(string.format("Gate %d cast failed while in Danger - serverhopping instead of resetting", gate_outcome.failed_gate))
+                                        trinket_bot.path_running = false
+                                        SafeServerhop(string.format("Gate %d cast failed while in Danger", gate_outcome.failed_gate))
+                                        return
+                                    end
+
+                                    if trinket_bot.gate_recovery_count <= 1 then
+                                        library:Notify(string.format("Gate %d failed (%s) - resetting once and restarting the original path", gate_outcome.failed_gate, gate_outcome.failure_reason or "unknown"))
+                                        trinket_bot.gate_recovery_pending = true
+
+                                        if trinket_bot.gate_recovery_connection then
+                                            pcall(function() trinket_bot.gate_recovery_connection:Disconnect() end)
+                                            trinket_bot.gate_recovery_connection = nil
+                                        end
+
+                                        trinket_bot.gate_recovery_connection = utility:Connection(plr.CharacterAdded, function(new_character)
+                                            if trinket_bot.gate_recovery_connection then
+                                                pcall(function() trinket_bot.gate_recovery_connection:Disconnect() end)
+                                                trinket_bot.gate_recovery_connection = nil
+                                            end
+
+                                            task.spawn(function()
+                                                local new_root = FindFirstChild(new_character, "HumanoidRootPart") or new_character:WaitForChild("HumanoidRootPart", 20)
+                                                local new_humanoid = FindFirstChildOfClass(new_character, "Humanoid") or new_character:WaitForChild("Humanoid", 20)
+
+                                                if not new_root or not new_humanoid then
+                                                    trinket_bot.gate_recovery_pending = false
+                                                    if test_mode then
+                                                        library:Notify("Gate recovery respawn failed - test path stopped")
+                                                    else
+                                                        TrinketBotServerhop("Gate recovery respawn failed")
+                                                    end
+                                                    return
+                                                end
+
+                                                task.wait(2)
+                                                trinket_bot.gate_recovery_pending = false
+                                                trinket_bot.path_running = false
+                                                if trinket_bot.gate_recovery_path_points and #trinket_bot.gate_recovery_path_points > 0 then
+                                                    trinket_bot.path_points = {}
+                                                    for path_index, path_point in ipairs(trinket_bot.gate_recovery_path_points) do
+                                                        trinket_bot.path_points[path_index] = table.clone(path_point)
+                                                    end
+                                                end
+                                                library:Notify("Gate recovery respawned - restarting original path from point 1")
+                                                ExecutePath(test_mode, true)
+                                            end)
+                                        end)
+
+                                        trinket_bot.path_running = false
+                                        utility:reset()
+                                        return
+                                    end
+
+                                    trinket_bot.path_running = false
+                                    if test_mode then
+                                        library:Notify("Gate still failed after one recovery reset - test path stopped")
+                                    else
+                                        library:Notify("Gate still failed after one recovery reset - serverhopping")
+                                        TrinketBotServerhop("Gate still failed after one recovery reset")
+                                    end
+                                    return
+                                end
+
+                                local failure_summary = string.format("No usable gate: %d destination(s) blocked, %d gate(s) attempted", gate_outcome.blocked, gate_outcome.attempted)
+                                library:Notify(failure_summary .. " - serverhopping")
                                 trinket_bot.path_running = false
-                                TrinketBotServerhop("All gate points blocked or failed")
+                                TrinketBotServerhop(failure_summary)
                                 return
                             end
                         else
                             local max_retries = 999
                             local retry_count = 0
 
+                            trinket_bot.gate_sequence_in_progress = true
                             while not gate_success and retry_count < max_retries and trinket_bot.path_running and not emergency_gate_requested and not trinket_bot.moderator_detected do
                                 retry_count = retry_count + 1
 
@@ -16707,6 +16900,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 local expected_dest = trinket_bot.path_points[i + 1] and trinket_bot.path_points[i + 1].position or nil
                                 gate_success = Gate(point.gate_location, expected_dest)
                             end
+                            trinket_bot.gate_sequence_in_progress = false
 
                             if not gate_success then
                                 library:Notify("Gate failed but staying in server - continuing path")
@@ -19670,6 +19864,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 local function try_pop_pd()
+                    if trinket_bot.gate_in_progress or trinket_bot.gate_sequence_in_progress then return end
+
                     local can_pop, current_day = can_pop_pd()
                     if not can_pop then return end
 
@@ -19767,6 +19963,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if not (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true") then
                     return
                 end
+
+                while trinket_bot.gate_in_progress or trinket_bot.gate_sequence_in_progress do
+                    task.wait(0.05)
+                    if not (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true") then
+                        return
+                    end
+                end
+
+                if not item or not item.Parent then return end
 
                 if not plr.Character or not plr.Character:FindFirstChild("Humanoid") then
                     return
@@ -19957,6 +20162,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if not bot_started then return end
 
                     if not obj:IsA("Tool") then return end
+
+                    while trinket_bot.gate_in_progress or trinket_bot.gate_sequence_in_progress do
+                        task.wait(0.05)
+                        bot_started = mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
+                        if not bot_started or not obj.Parent then
+                            return
+                        end
+                    end
 
                     if is_selected_auto_drop_tool(obj) then
                         trinket_bot.priority_tool_action = true
