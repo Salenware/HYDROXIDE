@@ -2492,7 +2492,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             end
 
-            function utility:charge_mana_until(amount, timeout, should_abort)
+            function utility:charge_mana_until(amount, timeout, should_abort, stall_timeout)
                 local character = plr.Character
                 local mana_available, initial_block_reason = can_use_mana(character)
                 if not character then
@@ -2533,8 +2533,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         break
                     end
 
-                    if timeout and tick() - last_progress >= 4 then
-                        stop_reason = "stalled for 4s"
+                    local max_stall = stall_timeout or 4
+                    if timeout and tick() - last_progress >= max_stall then
+                        stop_reason = string.format("stalled for %.0fs", max_stall)
                         break
                     end
 
@@ -9206,7 +9207,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             do
                 group_automation:AddDropdown("potions", {
                     Text = "Potions",
-                    Values = {"Health Potion", "Tespian Elixir", "Feather Feet", "Fire Protection", "Kingsbane", "Lordsbane", "Silver Sun", "Switch Witch"},
+                    Values = {"Health Potion", "Cooked Scroom", "Tespian Elixir", "Feather Feet", "Fire Protection", "Kingsbane", "Lordsbane", "Silver Sun", "Switch Witch"},
                     Default = "Health Potion",
                     Callback = function(value)
                     end
@@ -13734,6 +13735,22 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return false
                 end
 
+                local cast_state_wait_start = tick()
+                while character
+                    and (FindFirstChild(character, "ActiveCast") or FindFirstChild(character, "Casting"))
+                    and tick() - cast_state_wait_start < 5
+                    and trinket_bot.path_running
+                    and not emergency_gate_requested
+                    and not trinket_bot.moderator_detected
+                do
+                    task.wait(0.1)
+                end
+
+                if character and (FindFirstChild(character, "ActiveCast") or FindFirstChild(character, "Casting")) then
+                    local blocked_in_danger = cs:HasTag(character, "Danger")
+                    return false, blocked_in_danger and "cast_state_blocked_in_danger" or "cast_state_blocked"
+                end
+
                 if character and cs:HasTag(character, "Danger") then
                     local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
                     local has_player_nearby = false
@@ -13807,11 +13824,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 local function charge_gate_mana(target)
-                    local charged = utility:charge_mana_until(target, 20, function()
+                    local charged = utility:charge_mana_until(target, 25, function()
                         return not trinket_bot.path_running
                             or emergency_gate_requested ~= nil
                             or trinket_bot.moderator_detected
-                    end)
+                    end, 7)
 
                     if charged then
                         return true
@@ -13827,12 +13844,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 local in_danger = character and cs:HasTag(character, "Danger")
                 if is_azael and not in_danger then
-                    if mana.Value <= 15 and not charge_gate_mana(15) then
-                        return false
+                    if mana.Value < 5 and not charge_gate_mana(5) then
+                        return false, "mana_charge_failed"
                     end
                 elseif has_philosophers_stone then
                     if mana.Value < 60 and not charge_gate_mana(60) then
-                        return false
+                        return false, in_danger and "mana_charge_failed_in_danger" or "mana_charge_failed"
                     end
                 else
                     local ping = getPing()
@@ -13840,7 +13857,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                     local base_target = 79
                     local adjusted_target = base_target - (ping_adjustment * 50)
-                    adjusted_target = math.clamp(adjusted_target, 75, 83)
+                    adjusted_target = math.clamp(adjusted_target, 78, 82)
+
+                    if is_azael and in_danger then
+                        adjusted_target = math.max(adjusted_target, 81)
+                    end
 
                     if mana.Value > 83 then
                         utility:decharge_mana()
@@ -13850,11 +13871,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
 
                     if mana.Value < adjusted_target and not charge_gate_mana(adjusted_target) then
-                        return false
+                        return false, in_danger and "mana_charge_failed_in_danger" or "mana_charge_failed"
                     end
                 end
 
                 task.wait(0.05)
+                local danger_during_attempt = in_danger or cs:HasTag(character, "Danger")
                 utility:RightClick()
                 task.wait(0.8)
 
@@ -13879,7 +13901,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                                 if distance_to_destination > 700 then
                                     library:Notify(string.format("BACKFIRE detected (%.0f studs from expected destination)", distance_to_destination))
-                                    return false
+                                    return false, danger_during_attempt and "backfire_in_danger" or "backfire"
                                 end
 
                                 library:Notify(string.format("Successfully gated to %s (%.0f studs from destination)", where, distance_to_destination))
@@ -13897,7 +13919,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 warn("Gate teleportation failed: NoFall not found after 2.5s")
-                return false, "no_teleport"
+                return false, danger_during_attempt and "no_teleport_in_danger" or "no_teleport"
                 end)
 
                 trinket_bot.gate_in_progress = false
@@ -14529,7 +14551,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         for idx, point in ipairs(trinket_bot.path_points) do
                             if point.is_gate_point then
                                 library:Notify(string.format("Escape: Gating to point %d", idx))
-                                local gate_success = Gate(point.gate_location)
+                                local gate_success = Gate(
+                                    point.gate_location,
+                                    trinket_bot.path_points[idx + 1] and trinket_bot.path_points[idx + 1].position or nil
+                                )
                                 if gate_success then
                                     library:Notify("Escape gate successful!")
                                     escaped = true
@@ -14958,6 +14983,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
                 local skip_distance = trinket_bot.skip_distance_check or false
+                local resume_gate_index = nil
 
                 if skip_distance then
                     library:Notify("Skipping distance check (mid-path resume after emergency gate)")
@@ -14965,14 +14991,37 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 elseif not stay_in_server then
                     local distance_to_first = (root.Position - first_point).Magnitude
                     if distance_to_first > 400 then
-                        trinket_bot.path_running = false
-                        library:Notify(string.format("Too far from first point! Distance: %.1f studs (max: 400)", distance_to_first))
-                        if not test_mode and mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true" then
-                            utility:plain_webhook(string.format("**BOT KICKED**: Too far from first point (%.1f studs, max: 400) @here", distance_to_first))
-                            task.wait(1)
-                            plr:Kick(string.format("Too far from first point: %.1f studs (max: 400)", distance_to_first))
+                        local continuing_bot = not test_mode
+                            and mem:HasItem("botstarted")
+                            and mem:GetItem("botstarted") == "true"
+
+                        if continuing_bot then
+                            for index, path_point in ipairs(trinket_bot.path_points) do
+                                if path_point.is_gate_point then
+                                    resume_gate_index = index
+                                    break
+                                end
+                            end
                         end
-                        return
+
+                        if resume_gate_index then
+                            local gate_point = trinket_bot.path_points[resume_gate_index]
+                            library:Notify(string.format(
+                                "Too far from first point during bot session (%.1f studs) - recovering from Gate 1: %s (point %d)",
+                                distance_to_first,
+                                gate_point.gate_location or "unknown",
+                                resume_gate_index
+                            ))
+                        else
+                            trinket_bot.path_running = false
+                            library:Notify(string.format("Too far from first point! Distance: %.1f studs (max: 400)", distance_to_first))
+                            if continuing_bot then
+                                utility:plain_webhook(string.format("**BOT KICKED**: Too far from first point (%.1f studs, max: 400) @here", distance_to_first))
+                                task.wait(1)
+                                plr:Kick(string.format("Too far from first point: %.1f studs (max: 400)", distance_to_first))
+                            end
+                            return
+                        end
                     end
                 end
 
@@ -15841,7 +15890,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 trinket_bot.madrasian_initial_setup_ready = true
                 start_madrasian_shift_setup()
 
-                local i = 1
+                local i = resume_gate_index or 1
                 while i <= #trinket_bot.path_points do
                     if trinket_bot.moderator_detected then
                         library:Notify("Moderator detected - exiting main loop")
@@ -15887,7 +15936,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     end
                                 end
 
-                                local gate_success = Gate(trinket_bot.path_points[last_gate_index].gate_location)
+                                local gate_success = Gate(
+                                    trinket_bot.path_points[last_gate_index].gate_location,
+                                    trinket_bot.path_points[last_gate_index + 1] and trinket_bot.path_points[last_gate_index + 1].position or nil
+                                )
                                 if stabilization_platform then
                                     stabilization_platform:Destroy()
                                     stabilization_platform = nil
@@ -15943,7 +15995,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 end
                             end
 
-                            local gate_success = Gate(trinket_bot.path_points[last_gate_index].gate_location)
+                            local gate_success = Gate(
+                                trinket_bot.path_points[last_gate_index].gate_location,
+                                trinket_bot.path_points[last_gate_index + 1] and trinket_bot.path_points[last_gate_index + 1].position or nil
+                            )
                             if stabilization_platform then
                                 stabilization_platform:Destroy()
                                 stabilization_platform = nil
@@ -15968,7 +16023,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         if skip_point then
                             if skip_point.is_gate_point then
                                 library:Notify(string.format("Ice Dragon escape: gating to point %d", ice_dragon_skip_index))
-                                local gate_success = Gate(skip_point.gate_location)
+                                local gate_success = Gate(
+                                    skip_point.gate_location,
+                                    trinket_bot.path_points[ice_dragon_skip_index + 1] and trinket_bot.path_points[ice_dragon_skip_index + 1].position or nil
+                                )
                                 if gate_success then
                                     i = ice_dragon_skip_index + 1
                                     ice_dragon_skip_index = nil
@@ -16156,7 +16214,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     end
                                 end
 
-                                local gate_success = Gate(next_gate_point.gate_location)
+                                local gate_success = Gate(
+                                    next_gate_point.gate_location,
+                                    trinket_bot.path_points[next_gate_index + 1] and trinket_bot.path_points[next_gate_index + 1].position or nil
+                                )
 
                                 if stabilization_platform then
                                     stabilization_platform:Destroy()
@@ -16234,7 +16295,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                                 task.wait(0.5)
                                             end
 
-                                            gate_success = Gate(next_gate_point.gate_location)
+                                            gate_success = Gate(
+                                                next_gate_point.gate_location,
+                                                trinket_bot.path_points[next_gate_index + 1] and trinket_bot.path_points[next_gate_index + 1].position or nil
+                                            )
 
                                             if gate_success then
                                                 library:Notify(string.format("Successfully emergency gated to point %d (stay in server retry)", next_gate_index))
@@ -16312,7 +16376,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                                     task.wait(0.5)
                                                 end
 
-                                                gate_success = Gate(next_gate_point.gate_location)
+                                                gate_success = Gate(
+                                                    next_gate_point.gate_location,
+                                                    trinket_bot.path_points[next_gate_index + 1] and trinket_bot.path_points[next_gate_index + 1].position or nil
+                                                )
 
                                                 if gate_success then
                                                     library:Notify(string.format("Successfully emergency gated to point %d (after SnapCool wait)", next_gate_index))
@@ -16763,10 +16830,20 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     trinket_bot.gate_recovery_count = (trinket_bot.gate_recovery_count or 0) + 1
 
                                     if recovery_in_danger then
-                                        library:Notify(string.format("Gate %d cast failed while in Danger - serverhopping instead of resetting", gate_outcome.failed_gate))
-                                        trinket_bot.path_running = false
-                                        SafeServerhop(string.format("Gate %d cast failed while in Danger", gate_outcome.failed_gate))
-                                        return
+                                        library:Notify(string.format("Gate %d failed while in Danger - waiting for Danger to clear", gate_outcome.failed_gate))
+                                        while trinket_bot.path_running
+                                            and plr.Character
+                                            and cs:HasTag(plr.Character, "Danger")
+                                            and not trinket_bot.moderator_detected
+                                        do
+                                            task.wait(0.1)
+                                        end
+
+                                        if not trinket_bot.path_running or trinket_bot.moderator_detected then
+                                            return
+                                        end
+
+                                        library:Notify("Danger cleared - continuing gate recovery")
                                     end
 
                                     if trinket_bot.gate_recovery_count <= 1 then
@@ -16811,6 +16888,22 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                                 ExecutePath(test_mode, true)
                                             end)
                                         end)
+
+                                        local reset_character = plr.Character
+                                        if reset_character and cs:HasTag(reset_character, "Danger") then
+                                            library:Notify("Danger detected before gate recovery reset - waiting for Danger to clear")
+                                            while trinket_bot.path_running
+                                                and plr.Character == reset_character
+                                                and cs:HasTag(reset_character, "Danger")
+                                                and not trinket_bot.moderator_detected
+                                            do
+                                                task.wait(0.1)
+                                            end
+
+                                            if not trinket_bot.path_running or trinket_bot.moderator_detected then
+                                                return
+                                            end
+                                        end
 
                                         trinket_bot.path_running = false
                                         utility:reset()
@@ -16952,7 +17045,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 local gate_success = false
                                 local emergency_retries = 2
                                 local retry_count = 0
-
                                 while not gate_success and retry_count < emergency_retries and trinket_bot.path_running and not emergency_gate_requested and not trinket_bot.moderator_detected do
                                     retry_count = retry_count + 1
 
@@ -17014,7 +17106,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         library:Notify(string.format("Using gate to escape player (jumping to point %d)", next_gate_index))
                                     end
 
-                                    gate_success = Gate(next_gate_point.gate_location)
+                                    gate_success = Gate(
+                                        next_gate_point.gate_location,
+                                        trinket_bot.path_points[next_gate_index + 1] and trinket_bot.path_points[next_gate_index + 1].position or nil
+                                    )
                                 end
 
                                 if gate_success then
@@ -17141,7 +17236,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         if utility then
                                             utility:plain_webhook(string.format("Shrieker detected near point %d - gating to point %d to escape", i, next_gate_index))
                                         end
-                                        local gate_success = Gate(next_gate_point.gate_location)
+                                        local gate_success = Gate(
+                                            next_gate_point.gate_location,
+                                            trinket_bot.path_points[next_gate_index + 1] and trinket_bot.path_points[next_gate_index + 1].position or nil
+                                        )
                                         if gate_success then
                                             i = next_gate_index + 1
                                             continue
@@ -18648,7 +18746,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                                         if forcefield_removed then
                                                             library:Notify("ForceField removed - gating to last gate point")
 
-                                                            local gate_success = Gate(last_gate_point.gate_location)
+                                                            local gate_success = Gate(
+                                                                last_gate_point.gate_location,
+                                                                trinket_bot.path_points[last_gate_index + 1] and trinket_bot.path_points[last_gate_index + 1].position or nil
+                                                            )
 
                                                             if gate_success then
                                                                 library:Notify(string.format("Successfully gated to last gate point %d - continuing to end then serverhopping", last_gate_index))
@@ -18888,7 +18989,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                                     if gate_recovery_ff_removed then
                                                         library:Notify("ForceField removed - gating to last gate point for recovery")
 
-                                                        local recovery_gate_success = Gate(recovery_gate_point.gate_location)
+                                                        local recovery_gate_success = Gate(
+                                                            recovery_gate_point.gate_location,
+                                                            trinket_bot.path_points[recovery_gate_index + 1] and trinket_bot.path_points[recovery_gate_index + 1].position or nil
+                                                        )
 
                                                         if recovery_gate_success then
                                                             library:Notify(string.format("Successfully gated to last gate point %d - continuing to end then serverhopping", recovery_gate_index))
@@ -23466,7 +23570,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 if mana_instance then
                                     local mana_value = mana_instance.Value;
 
-                                    if (mana_value > 75 and mana_value < 80) or not cs:HasTag(plr.Character,'Danger') and FindFirstChild(plr.Character, "AzaelHorn") then
+                                    if (mana_value >= 75 and mana_value <= 83) or not cs:HasTag(plr.Character,'Danger') and FindFirstChild(plr.Character, "AzaelHorn") then
                                         return old_remote(Event, ...)
                                     end
                                     
