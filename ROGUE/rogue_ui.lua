@@ -12873,6 +12873,23 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return inventory_value
             end
 
+            function trinket_bot.get_phoenix_flower_count()
+                local total = 0
+
+                for _, container in ipairs({plr.Backpack, plr.Character}) do
+                    if container then
+                        for _, item in ipairs(container:GetChildren()) do
+                            if item:IsA("Tool") and item.Name == "Phoenix Flower" then
+                                local quantity = FindFirstChild(item, "Quantity")
+                                total += quantity and tonumber(quantity.Value) or 1
+                            end
+                        end
+                    end
+                end
+
+                return total
+            end
+
             local function format_loot_summary()
                 local elapsed_time = os.clock() - trinket_bot.session_start_time
                 local hours = math.floor(elapsed_time / 3600)
@@ -13823,7 +13840,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
 
-                local function charge_gate_mana(target)
+                local function charge_gate_mana(target, minimum)
                     local charged = utility:charge_mana_until(target, 25, function()
                         return not trinket_bot.path_running
                             or emergency_gate_requested ~= nil
@@ -13835,6 +13852,16 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
 
                     utility:decharge_mana()
+                    if minimum
+                        and mana.Value >= minimum
+                        and trinket_bot.path_running
+                        and emergency_gate_requested == nil
+                        and not trinket_bot.moderator_detected
+                    then
+                        library:Notify(string.format("Gate mana charge stopped at %.0f/%.0f - casting above minimum %.0f", mana.Value, target, minimum))
+                        return true
+                    end
+
                     if INPUT_BLOCKED then
                         unblockInputs()
                     end
@@ -13844,7 +13871,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 local in_danger = character and cs:HasTag(character, "Danger")
                 if is_azael and not in_danger then
-                    if mana.Value < 5 and not charge_gate_mana(5) then
+                    if mana.Value < 50 and not charge_gate_mana(50, 5) then
                         return false, "mana_charge_failed"
                     end
                 elseif has_philosophers_stone then
@@ -14216,6 +14243,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     emergency_serverhop_conditions = Options.EmergencyServerhopConditions and Options.EmergencyServerhopConditions.Value or {},
                     join_oldest_server = Toggles.JoinOldestServer and Toggles.JoinOldestServer.Value or false,
                     auto_pop_pds = Toggles.AutoPopPDs and Toggles.AutoPopPDs.Value or false,
+                    stop_at_phoenix_flowers = Toggles.StopAtPhoenixFlowers and Toggles.StopAtPhoenixFlowers.Value or false,
+                    phoenix_flower_target = tonumber(Options.PhoenixFlowerTarget and Options.PhoenixFlowerTarget.Value) or 30,
+                    stop_at_deaths = tonumber(Options.StopAtDeaths and Options.StopAtDeaths.Value) or 3,
                     auto_drop_items = Options.AutoDropItems and Options.AutoDropItems.Value or {},
                     kick_on_trinket = Toggles.KickOnTrinket and Toggles.KickOnTrinket.Value or false,
                     kick_trinket_list = Options.KickTrinketList and Options.KickTrinketList.Value or {},
@@ -14236,7 +14266,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     local boiii = reason:lower():find("repeat encounter") or reason:lower():find("unfriendly player")
 
                     if boiii then
-                        utility:plain_webhook(reason)
+                        if game.PlaceId == 3541987450 then
+                            utility:plain_webhook(string.format("%s | Phoenix Flowers: %d", reason, trinket_bot.get_phoenix_flower_count()))
+                        else
+                            utility:plain_webhook(reason)
+                        end
                     else
                         local serverName, serverRegion = get_server_info()
                         local elapsed_time = os.clock() - trinket_bot.session_start_time
@@ -14273,6 +14307,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             get_inventory_value(),
                             hours, minutes, seconds
                         )
+
+                        if game.PlaceId == 3541987450 then
+                            trinket_bot.phoenix_flower_count = trinket_bot.get_phoenix_flower_count()
+                            description = description .. string.format("\n**Phoenix Flowers:** %d", trinket_bot.phoenix_flower_count)
+                        end
 
                         local embed = {
                             title = string.format("Serverhop #%d | %s", current_count + 1, reason),
@@ -14859,6 +14898,94 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 return false, count, false, true
             end
+
+            function trinket_bot.get_stop_at_deaths_target(target_override)
+                local target = tonumber(target_override)
+                if target == nil and Options.StopAtDeaths then
+                    target = tonumber(Options.StopAtDeaths.Value)
+                end
+                return math.max(0, target or 3)
+            end
+
+            function trinket_bot.stop_for_death_limit(deaths, target)
+                trinket_bot.path_running = false
+                mem:RemoveItem("botstarted")
+                mem:RemoveItem("serverhop_count")
+                release_disable_beds_for_bot()
+
+                pcall(function()
+                    library:Notify(string.format("Deaths: %d/%d - stopping bot for wipe safety", deaths, target))
+                    utility:plain_webhook(string.format("@here %s reached %d Deaths (limit %d) - stopping bot for wipe safety", plr.Name, deaths, target))
+                end)
+
+                task.wait(0.3)
+                plr:Kick(string.format("Death limit reached (%d/%d) - bot stopped", deaths, target))
+            end
+
+            function trinket_bot.check_existing_death_limit(target_override)
+                if game.PlaceId ~= 3541987450 then
+                    return false
+                end
+
+                local target = trinket_bot.get_stop_at_deaths_target(target_override)
+                if target <= 0 then
+                    return false
+                end
+
+                local deaths = tonumber(Get("Deaths"))
+                if deaths == nil then
+                    return false
+                end
+
+                trinket_bot.last_known_deaths = deaths
+                if deaths >= target then
+                    trinket_bot.death_limit_reached = true
+                    trinket_bot.stop_for_death_limit(deaths, target)
+                    return true
+                end
+
+                return false
+            end
+
+            function trinket_bot.check_death_limit_after_death(target_override)
+                if game.PlaceId ~= 3541987450 then
+                    return false
+                end
+
+                local target = trinket_bot.get_stop_at_deaths_target(target_override)
+                if target <= 0 then
+                    return false
+                end
+
+                trinket_bot.death_limit_check_pending = true
+                local previous_deaths = tonumber(trinket_bot.last_known_deaths) or tonumber(Get("Deaths")) or 0
+                local current_deaths = previous_deaths
+                local deadline = tick() + 5
+
+                repeat
+                    current_deaths = tonumber(Get("Deaths")) or current_deaths
+                    if current_deaths > previous_deaths then
+                        break
+                    end
+                    task.wait(0.25)
+                until tick() >= deadline
+
+                if current_deaths <= previous_deaths then
+                    current_deaths = previous_deaths + 1
+                end
+
+                trinket_bot.last_known_deaths = current_deaths
+                if current_deaths >= target then
+                    trinket_bot.death_limit_reached = true
+                    trinket_bot.death_limit_check_pending = false
+                    trinket_bot.stop_for_death_limit(current_deaths, target)
+                    return true
+                end
+
+                trinket_bot.death_limit_check_pending = false
+                return false
+            end
+
             local function ExecutePath(test_mode, gate_recovery_resume)
                 if not cheat_client or not cheat_client.config then
                     return
@@ -14866,6 +14993,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 test_mode = test_mode or false
                 trinket_bot.test_mode = test_mode
+
+                if not test_mode then
+                    trinket_bot.death_limit_reached = false
+                    if trinket_bot.check_existing_death_limit() then
+                        return
+                    end
+                end
 
                 if not gate_recovery_resume then
                     trinket_bot.gate_recovery_count = 0
@@ -15097,6 +15231,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             trinket_bot.path_running = false
                             pcall(function() library:Notify("Path stopped due to death") end)
 
+                            if not test_mode and trinket_bot.check_death_limit_after_death() then
+                                return
+                            end
+
                             if trinket_bot.gate_recovery_pending then
                                 cheat_client.manual_reset_pending = nil
                                 pcall(function() library:Notify("Gate recovery reset - waiting to restart path") end)
@@ -15104,10 +15242,43 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             end
 
                             local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
+                            local died_with_danger = character and cs:HasTag(character, "Danger")
+                            local continue_for_phoenix = not test_mode
+                                and game.PlaceId == 3541987450
+                                and Toggles.StopAtPhoenixFlowers
+                                and Toggles.StopAtPhoenixFlowers.Value
+
+                            if continue_for_phoenix then
+                                local stopped, count, manual_reset, is_aagun = false, nil, false, false
+                                if not died_with_danger then
+                                    stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position)
+                                end
+
+                                if stopped then
+                                    return
+                                end
+
+                                if manual_reset then
+                                    trinket_bot.death_continue_reason = "bot manually reset while farming Phoenix Flowers"
+                                elseif is_aagun then
+                                    trinket_bot.death_continue_reason = string.format("bot aagunned %d time(s) while farming Phoenix Flowers", count)
+                                elseif died_with_danger then
+                                    trinket_bot.death_continue_reason = "bot died with ctag while farming Phoenix Flowers"
+                                else
+                                    trinket_bot.death_continue_reason = "bot died without ctag while farming Phoenix Flowers"
+                                end
+
+                                trinket_bot.death_continue_pending = true
+                                pcall(function()
+                                    library:Notify(trinket_bot.death_continue_reason .. " - continuing")
+                                    utility:plain_webhook("@here " .. trinket_bot.death_continue_reason .. " - continuing")
+                                end)
+                                return
+                            end
+
                             if test_mode then
                                 pcall(function() library:Notify("You died (test mode - not kicking)") end)
                             elseif stay_in_server then
-                                local died_with_danger = character and cs:HasTag(character, "Danger")
                                 if died_with_danger then
                                     pcall(function() library:Notify("You died (stay in server - not kicking)") end)
                                     pcall(function() utility:plain_webhook("@here bot died (stay in server mode)") end)
@@ -15127,7 +15298,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 end
                             else
                                 task.spawn(function()
-                                    local died_with_danger = character and cs:HasTag(character, "Danger")
                                     if died_with_danger then
                                         pcall(function() utility:plain_webhook("@everyone bot died with ctag - kicking") end)
                                         task.wait(0.3)
@@ -17625,6 +17795,72 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
 
+                while trinket_bot.death_limit_check_pending do
+                    task.wait(0.1)
+                end
+
+                if trinket_bot.death_limit_reached then
+                    trinket_bot.death_limit_reached = false
+                    return
+                end
+
+                if trinket_bot.death_continue_pending then
+                    trinket_bot.death_continue_pending = false
+
+                    if not (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true") then
+                        trinket_bot.death_continue_reason = nil
+                        return
+                    end
+
+                    local continue_reason = trinket_bot.death_continue_reason or "bot died while farming Phoenix Flowers"
+                    trinket_bot.death_continue_reason = nil
+                    local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
+
+                    if stay_in_server then
+                        local respawn_deadline = tick() + 30
+                        repeat
+                            task.wait(0.25)
+                        until (plr.Character and plr.Character ~= character and FindFirstChild(plr.Character, "HumanoidRootPart"))
+                            or tick() >= respawn_deadline
+
+                        if plr.Character and plr.Character ~= character and FindFirstChild(plr.Character, "HumanoidRootPart") then
+                            task.wait(1)
+                            ExecutePath(false)
+                        else
+                            library:Notify("Respawn timed out while continuing Phoenix Flower bot")
+                        end
+                    else
+                        TrinketBotServerhop(continue_reason .. " - server hopping")
+                    end
+                    return
+                end
+
+                if not test_mode
+                    and game.PlaceId == 3541987450
+                    and i > #trinket_bot.path_points
+                then
+                    trinket_bot.phoenix_flower_count = trinket_bot.get_phoenix_flower_count()
+                    trinket_bot.phoenix_flower_target = math.max(1, tonumber(Options.PhoenixFlowerTarget and Options.PhoenixFlowerTarget.Value) or 30)
+
+                    if Toggles.StopAtPhoenixFlowers and Toggles.StopAtPhoenixFlowers.Value then
+                        library:Notify(string.format("Phoenix Flowers: %d/%d", trinket_bot.phoenix_flower_count, trinket_bot.phoenix_flower_target))
+
+                        if trinket_bot.phoenix_flower_count >= trinket_bot.phoenix_flower_target then
+                            trinket_bot.path_running = false
+                            mem:RemoveItem("botstarted")
+                            mem:RemoveItem("serverhop_count")
+                            release_disable_beds_for_bot()
+                            library:Notify(string.format("%s %d Phoenix Flowers reached, stopping bot", plr.Name, trinket_bot.phoenix_flower_count))
+                            pcall(function()
+                                utility:plain_webhook(string.format("@here %s %d Phoenix Flowers reached, stopping bot", plr.Name, trinket_bot.phoenix_flower_count))
+                            end)
+                            return
+                        end
+                    else
+                        library:Notify(string.format("Phoenix Flowers: %d", trinket_bot.phoenix_flower_count))
+                    end
+                end
+
                 if not test_mode and not mem:HasItem("botstarted") then
                     trinket_bot.path_running = false
                     library:Notify("Bot stopped")
@@ -18285,6 +18521,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if Options.EmergencyServerhopConditions then Options.EmergencyServerhopConditions:SetValue(settings.emergency_serverhop_conditions or {}) end
                 if Toggles.JoinOldestServer then Toggles.JoinOldestServer:SetValue(settings.join_oldest_server or false) end
                 if Toggles.AutoPopPDs then Toggles.AutoPopPDs:SetValue(settings.auto_pop_pds or false) end
+                if Toggles.StopAtPhoenixFlowers then Toggles.StopAtPhoenixFlowers:SetValue(settings.stop_at_phoenix_flowers or false) end
+                if Options.PhoenixFlowerTarget then Options.PhoenixFlowerTarget:SetValue(tostring(settings.phoenix_flower_target or 30)) end
+                if Options.StopAtDeaths then Options.StopAtDeaths:SetValue(tostring(settings.stop_at_deaths ~= nil and settings.stop_at_deaths or 3)) end
                 if Options.AutoDropItems then Options.AutoDropItems:SetValue(settings.auto_drop_items or {}) end
                 if Toggles.KickOnTrinket then Toggles.KickOnTrinket:SetValue(settings.kick_on_trinket or false) end
                 if Options.KickTrinketList then Options.KickTrinketList:SetValue(settings.kick_trinket_list or {}) end
@@ -18389,6 +18628,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     trinket_bot.path_running = false
 
                     local should_skip_illusionist = false
+                    trinket_bot.auto_start_stop_at_phoenix_flowers = false
+                    trinket_bot.auto_start_stop_at_deaths = 3
                     if mem:HasItem("trinket_bot_settings") then
                         local httpService = Services.HttpService
                         local success_load, loaded_settings = pcall(function()
@@ -18396,8 +18637,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end)
                         if success_load and loaded_settings then
                             should_skip_illusionist = loaded_settings.skip_illusionist or false
+                            trinket_bot.auto_start_stop_at_phoenix_flowers = game.PlaceId == 3541987450
+                                and loaded_settings.stop_at_phoenix_flowers == true
+                            trinket_bot.auto_start_stop_at_deaths = tonumber(loaded_settings.stop_at_deaths) or 3
                         end
                     end
+
+                    trinket_bot.last_known_deaths = tonumber(Get("Deaths"))
 
                     for _, other_player in next, plrs:GetPlayers() do
                         if other_player ~= plr and is_moderator(other_player) then
@@ -18451,7 +18697,63 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     local death_position = trinket_bot.get_death_position(character)
                                     local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
                                     local died_with_danger = character and cs:HasTag(character, "Danger")
-                                    if stay_in_server and died_with_danger then
+
+                                    if trinket_bot.check_death_limit_after_death(trinket_bot.auto_start_stop_at_deaths) then
+                                        return
+                                    end
+
+                                    local continue_for_phoenix = game.PlaceId == 3541987450
+                                        and ((Toggles.StopAtPhoenixFlowers and Toggles.StopAtPhoenixFlowers.Value)
+                                            or trinket_bot.auto_start_stop_at_phoenix_flowers)
+
+                                    if continue_for_phoenix then
+                                        local stopped, count, manual_reset, is_aagun = false, nil, false, false
+                                        if not died_with_danger then
+                                            stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position)
+                                        end
+
+                                        if stopped then
+                                            return
+                                        end
+
+                                        local continue_reason
+                                        if manual_reset then
+                                            continue_reason = "Bot manually reset during auto-start while farming Phoenix Flowers"
+                                        elseif is_aagun then
+                                            continue_reason = string.format("Bot aagunned %d time(s) during auto-start while farming Phoenix Flowers", count)
+                                        elseif died_with_danger then
+                                            continue_reason = "Bot died with ctag during auto-start while farming Phoenix Flowers"
+                                        else
+                                            continue_reason = "Bot died without ctag during auto-start while farming Phoenix Flowers"
+                                        end
+
+                                        pcall(function()
+                                            library:Notify(continue_reason .. " - continuing")
+                                            utility:plain_webhook("@here " .. continue_reason .. " - continuing")
+                                        end)
+
+                                        task.spawn(function()
+                                            task.wait(1)
+                                            if not (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true") then
+                                                return
+                                            end
+
+                                            if stay_in_server then
+                                                local respawn_deadline = tick() + 30
+                                                repeat
+                                                    task.wait(0.25)
+                                                until (plr.Character and plr.Character ~= character and FindFirstChild(plr.Character, "HumanoidRootPart"))
+                                                    or tick() >= respawn_deadline
+
+                                                if plr.Character and plr.Character ~= character and FindFirstChild(plr.Character, "HumanoidRootPart") then
+                                                    task.wait(1)
+                                                    ExecutePath(false)
+                                                end
+                                            else
+                                                TrinketBotServerhop(continue_reason .. " - server hopping")
+                                            end
+                                        end)
+                                    elseif stay_in_server and died_with_danger then
                                         pcall(function() library:Notify("Died during auto-start (stay in server mode)") end)
                                         pcall(function() utility:plain_webhook("@here Bot died during auto-start (stay in server mode)") end)
                                     elseif not died_with_danger then
@@ -19258,6 +19560,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             emergency_serverhop_conditions = Options.EmergencyServerhopConditions and Options.EmergencyServerhopConditions.Value or {},
                             join_oldest_server = Toggles.JoinOldestServer and Toggles.JoinOldestServer.Value or false,
                             auto_pop_pds = Toggles.AutoPopPDs and Toggles.AutoPopPDs.Value or false,
+                            stop_at_phoenix_flowers = Toggles.StopAtPhoenixFlowers and Toggles.StopAtPhoenixFlowers.Value or false,
+                            phoenix_flower_target = tonumber(Options.PhoenixFlowerTarget and Options.PhoenixFlowerTarget.Value) or 30,
+                            stop_at_deaths = tonumber(Options.StopAtDeaths and Options.StopAtDeaths.Value) or 3,
                             auto_drop_items = Options.AutoDropItems and Options.AutoDropItems.Value or {},
                             kick_on_trinket = Toggles.KickOnTrinket and Toggles.KickOnTrinket.Value or false,
                             kick_trinket_list = Options.KickTrinketList and Options.KickTrinketList.Value or {},
@@ -19924,6 +20229,32 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Suffix = "m",
                 Tooltip = "Wait time before respawning and restarting path (in minutes)"
             })
+
+            if game.PlaceId == 3541987450 then
+                group_trinket_looping:AddToggle("StopAtPhoenixFlowers", {
+                    Text = "Stop at Phoenix Flowers",
+                    Default = false,
+                    Tooltip = "Stops the bot after a completed path when the Phoenix Flower target is reached"
+                })
+
+                group_trinket_looping:AddInput("PhoenixFlowerTarget", {
+                    Default = "30",
+                    Numeric = true,
+                    Finished = true,
+                    Text = "Phoenix Flower Target",
+                    Tooltip = "Phoenix Flower amount required to stop the bot",
+                    Placeholder = "30"
+                })
+
+                group_trinket_looping:AddInput("StopAtDeaths", {
+                    Default = "3",
+                    Numeric = true,
+                    Finished = true,
+                    Text = "Stop at Deaths",
+                    Tooltip = "Stops and kicks the bot when the game's raw Deaths value reaches this number (0 = disabled)",
+                    Placeholder = "3"
+                })
+            end
 
             if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 then
                 local lives_table = {
