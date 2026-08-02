@@ -7702,7 +7702,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             })
 
             group_combat_utils:AddToggle("AntiHystericus", {
-                Text = "No Confusion",
+                Text = "Anti Hystericus",
                 Default = cheat_client.config.anti_confusion
             })
 
@@ -14957,25 +14957,37 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return false
                 end
 
+                if trinket_bot.death_limit_check_pending then
+                    repeat
+                        task.wait(0.1)
+                    until not trinket_bot.death_limit_check_pending
+                    return trinket_bot.death_limit_reached == true
+                end
+
                 trinket_bot.death_limit_check_pending = true
-                local previous_deaths = tonumber(trinket_bot.last_known_deaths) or tonumber(Get("Deaths")) or 0
-                local current_deaths = previous_deaths
-                local deadline = tick() + 5
+                local previous_deaths = tonumber(trinket_bot.last_known_deaths)
+                local current_deaths = tonumber(Get("Deaths"))
+                local deadline = tick() + 15
 
                 repeat
-                    current_deaths = tonumber(Get("Deaths")) or current_deaths
-                    if current_deaths > previous_deaths then
+                    local observed_deaths = tonumber(Get("Deaths"))
+                    if observed_deaths ~= nil then
+                        current_deaths = observed_deaths
+                    end
+
+                    if current_deaths ~= nil
+                        and (current_deaths >= target or (previous_deaths ~= nil and current_deaths > previous_deaths))
+                    then
                         break
                     end
                     task.wait(0.25)
                 until tick() >= deadline
 
-                if current_deaths <= previous_deaths then
-                    current_deaths = previous_deaths + 1
+                if current_deaths ~= nil then
+                    trinket_bot.last_known_deaths = current_deaths
                 end
 
-                trinket_bot.last_known_deaths = current_deaths
-                if current_deaths >= target then
+                if current_deaths ~= nil and current_deaths >= target then
                     trinket_bot.death_limit_reached = true
                     trinket_bot.death_limit_check_pending = false
                     trinket_bot.stop_for_death_limit(current_deaths, target)
