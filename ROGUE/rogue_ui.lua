@@ -17862,10 +17862,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             mem:RemoveItem("botstarted")
                             mem:RemoveItem("serverhop_count")
                             release_disable_beds_for_bot()
-                            library:Notify(string.format("%s %d Phoenix Flowers reached, stopping bot", plr.Name, trinket_bot.phoenix_flower_count))
+                            local reached_message = string.format("%d Phoenix Flowers reached - kicking", trinket_bot.phoenix_flower_count)
+                            library:Notify(reached_message)
                             pcall(function()
-                                utility:plain_webhook(string.format("@here %s %d Phoenix Flowers reached, stopping bot", plr.Name, trinket_bot.phoenix_flower_count))
+                                utility:plain_webhook(string.format("@here %s %s", plr.Name, reached_message))
                             end)
+                            task.wait(0.5)
+                            plr:Kick(reached_message)
                             return
                         end
                     else
