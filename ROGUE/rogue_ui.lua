@@ -64,6 +64,2025 @@ local HXD_DEFAULT_REMOTE_ROOT = "https://raw.githubusercontent.com/Salenware/HYD
 local HXD_DEFAULT_LOCAL_ROOT = "HYDROXIDE_REPO/"
 local hxd_env = getgenv()
 
+hxd_env.HXD_EMBEDDED_MODULES = hxd_env.HXD_EMBEDDED_MODULES or {}
+-- HXD_EMBEDDED_MODULES_BEGIN
+hxd_env.HXD_EMBEDDED_MODULES["DEPENDENCIES/Captcha.lua"] = [========[
+local EncodingService = cloneref(game:GetService("EncodingService"))
+
+local CSGPHS8 = {}
+local newVector3 = Vector3.new
+local createTable = table.create
+local min = math.min
+local max = math.max
+
+local function u32(r)
+	local value = buffer.readu32(r.data, r.at)
+	r.at += 4
+	return value
+end
+
+local function f32(r)
+	local value = buffer.readf32(r.data, r.at)
+	r.at += 4
+	return value
+end
+
+local function vec3(r)
+	return newVector3(f32(r), f32(r), f32(r))
+end
+
+local function readRawHulls(r)
+	local faceRangeCount = u32(r)
+	local faceRanges = createTable(faceRangeCount)
+	for i = 1, faceRangeCount do
+		faceRanges[i] = u32(r)
+	end
+
+	local faceValueCount = faceRanges[#faceRanges] or 0
+	local faces = createTable(faceValueCount)
+	for i = 1, faceValueCount do
+		faces[i] = u32(r)
+	end
+
+	local posRangeCount = u32(r)
+	local posRanges = createTable(posRangeCount)
+	for i = 1, posRangeCount do
+		posRanges[i] = u32(r)
+	end
+
+	local positionValueCount = posRanges[#posRanges] or 0
+	local positions = createTable(positionValueCount)
+	for i = 1, positionValueCount do
+		positions[i] = f32(r)
+	end
+
+	return faceRanges, faces, posRanges, positions
+end
+
+local function bitReader(data, at, byteCount, bitCount)
+	local cache, cached = 0, 0
+	local finish = at + byteCount
+
+	return function(count)
+		local value = 0
+		while count > 0 do
+			if cached == 0 then
+				cache = buffer.readu32(data, at)
+				at += 4
+				cached = min(bitCount, 32)
+				bitCount -= cached
+			end
+
+			local take = min(count, cached)
+			cached -= take
+			value = value * 2 ^ take + bit32.extract(cache, cached, take)
+			count -= take
+		end
+		return value
+	end
+end
+
+local function decodeFaces(data, at, byteCount, bitCount, hullCount, faceCount)
+	local bits = bitReader(data, at, byteCount, bitCount)
+	local adjacency = createTable(faceCount * 3, -3)
+	local indices = createTable(faceCount * 3, 0)
+	local faceRanges, posRanges = { 0 }, { 0 }
+	local currentFace, vertexOffset = 0, 0
+
+	local function nextEdge(edge)
+		return math.floor(edge / 3) * 3 + (edge + 1) % 3
+	end
+
+	local function prevEdge(edge)
+		return math.floor(edge / 3) * 3 + (edge + 2) % 3
+	end
+
+	local function zipBoundary(current)
+		while adjacency[current + 1] == -2 do
+			local candidate = nextEdge(current)
+			while adjacency[candidate + 1] >= 0 do
+				candidate = nextEdge(adjacency[candidate + 1])
+			end
+			if adjacency[candidate + 1] ~= -1 then
+				break
+			end
+
+			adjacency[current + 1], adjacency[candidate + 1] = candidate, current
+			current = prevEdge(current)
+			local previous = current
+			local candidatePrevious = prevEdge(candidate)
+			indices[prevEdge(current) + 1] = indices[candidatePrevious + 1]
+
+			local connected = adjacency[current + 1]
+			while connected >= 0 and candidate ~= previous do
+				previous = prevEdge(connected)
+				indices[prevEdge(previous) + 1] = indices[candidatePrevious + 1]
+				connected = adjacency[previous + 1]
+			end
+			while adjacency[current + 1] >= 0 and current ~= candidate do
+				current = prevEdge(adjacency[current + 1])
+			end
+		end
+	end
+
+	for _ = 1, hullCount do
+		local firstEdge = currentFace * 3
+		adjacency[firstEdge + 1], adjacency[firstEdge + 2], adjacency[firstEdge + 3] = -1, -3, -1
+		indices[firstEdge + 1], indices[firstEdge + 2], indices[firstEdge + 3] = 0, 1, 2
+		currentFace += 1
+		local vertexCount = 3
+
+		local decode
+		function decode(cursor)
+			while true do
+				local edge0 = currentFace * 3
+				local edge1, edge2 = edge0 + 1, edge0 + 2
+				adjacency[edge0 + 1], adjacency[edge1 + 1], adjacency[edge2 + 1] = cursor, -3, -3
+				currentFace += 1
+				adjacency[cursor + 1] = edge0
+				indices[edge1 + 1] = indices[prevEdge(cursor) + 1]
+				indices[edge2 + 1] = indices[nextEdge(cursor) + 1]
+				cursor = edge1
+
+				local symbol
+				if bits(1) == 0 then
+					symbol = 0 -- Continue
+				else
+					symbol = bits(2) + 1 -- Split, Left, Right, End
+				end
+
+				if symbol == 0 then
+					indices[edge0 + 1] = vertexCount
+					adjacency[nextEdge(cursor) + 1] = -1
+					vertexCount += 1
+				elseif symbol == 1 then
+					decode(cursor)
+					cursor = nextEdge(cursor)
+				elseif symbol == 2 then
+					adjacency[cursor + 1] = -2
+					cursor = nextEdge(cursor)
+				elseif symbol == 3 then
+					local next = nextEdge(cursor)
+					adjacency[next + 1] = -2
+					zipBoundary(next)
+				else
+					adjacency[cursor + 1] = -2
+					local next = nextEdge(cursor)
+					adjacency[next + 1] = -2
+					zipBoundary(next)
+					return
+				end
+			end
+		end
+
+		decode(firstEdge + 1)
+		vertexOffset += vertexCount
+		faceRanges[#faceRanges + 1] = currentFace * 3
+		posRanges[#posRanges + 1] = vertexOffset * 3
+	end
+
+	return faceRanges, indices, posRanges
+end
+
+local function appendHulls(output, faceRanges, faces, posRanges, positions)
+	for hullIndex = 1, min(#faceRanges, #posRanges) - 1 do
+		local vertices = {}
+		local minX, minY, minZ = math.huge, math.huge, math.huge
+		local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+
+		for i = posRanges[hullIndex] + 1, posRanges[hullIndex + 1], 3 do
+			local x, y, z = positions[i], positions[i + 1], positions[i + 2]
+			vertices[#vertices + 1] = newVector3(x, y, z)
+			minX, minY, minZ = min(minX, x), min(minY, y), min(minZ, z)
+			maxX, maxY, maxZ = max(maxX, x), max(maxY, y), max(maxZ, z)
+		end
+
+		local triangles = {}
+		for i = faceRanges[hullIndex] + 1, faceRanges[hullIndex + 1], 3 do
+			triangles[#triangles + 1] = { faces[i] + 1, faces[i + 1] + 1, faces[i + 2] + 1 }
+		end
+
+		output[#output + 1] = {
+			vertices = vertices,
+			triangles = triangles,
+			center = newVector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2),
+			size = newVector3(maxX - minX, maxY - minY, maxZ - minZ),
+			bounds = {
+				min = newVector3(minX, minY, minZ),
+				max = newVector3(maxX, maxY, maxZ),
+			},
+		}
+	end
+end
+
+local function distance2(a, b)
+	local x, y, z = a.X - b.X, a.Y - b.Y, a.Z - b.Z
+	return x * x + y * y + z * z
+end
+
+local function makeGroup(hulls, hullIndices)
+	local group = {
+		hulls = createTable(#hullIndices),
+		hullIndices = hullIndices,
+	}
+	local minX, minY, minZ = math.huge, math.huge, math.huge
+	local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+
+	for _, hullIndex in hullIndices do
+		local hull = hulls[hullIndex]
+		group.hulls[#group.hulls + 1] = hull
+		minX = min(minX, hull.bounds.min.X)
+		minY = min(minY, hull.bounds.min.Y)
+		minZ = min(minZ, hull.bounds.min.Z)
+		maxX = max(maxX, hull.bounds.max.X)
+		maxY = max(maxY, hull.bounds.max.Y)
+		maxZ = max(maxZ, hull.bounds.max.Z)
+	end
+
+	group.bounds = {
+		min = newVector3(minX, minY, minZ),
+		max = newVector3(maxX, maxY, maxZ),
+	}
+	group.center = newVector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2)
+	group.size = newVector3(maxX - minX, maxY - minY, maxZ - minZ)
+	return group
+end
+
+local function buildConnectedGroups(hulls, epsilon)
+	local parents = createTable(#hulls)
+	for i = 1, #hulls do
+		parents[i] = i
+	end
+
+	local function find(index)
+		local root = index
+		while parents[root] ~= root do
+			root = parents[root]
+		end
+		while parents[index] ~= index do
+			local nextIndex = parents[index]
+			parents[index] = root
+			index = nextIndex
+		end
+		return root
+	end
+
+	local function overlaps(a, b)
+		return a.bounds.max.X >= b.bounds.min.X - epsilon
+			and b.bounds.max.X >= a.bounds.min.X - epsilon
+			and a.bounds.max.Y >= b.bounds.min.Y - epsilon
+			and b.bounds.max.Y >= a.bounds.min.Y - epsilon
+			and a.bounds.max.Z >= b.bounds.min.Z - epsilon
+			and b.bounds.max.Z >= a.bounds.min.Z - epsilon
+	end
+
+	for i = 1, #hulls - 1 do
+		for j = i + 1, #hulls do
+			if overlaps(hulls[i], hulls[j]) then
+				local rootI, rootJ = find(i), find(j)
+				if rootI ~= rootJ then
+					parents[rootJ] = rootI
+				end
+			end
+		end
+	end
+
+	local componentsByRoot = {}
+	local components = {}
+	for i = 1, #hulls do
+		local root = find(i)
+		local indices = componentsByRoot[root]
+		if not indices then
+			indices = {}
+			componentsByRoot[root] = indices
+			components[#components + 1] = indices
+		end
+		indices[#indices + 1] = i
+	end
+
+	local groups = createTable(#components)
+	for i, indices in components do
+		groups[i] = makeGroup(hulls, indices)
+	end
+	return groups
+end
+
+local function mergeExtraGroups(hulls, groups)
+	table.sort(groups, function(a, b)
+		return #a.hullIndices > #b.hullIndices
+	end)
+	local assignments = { {}, {} }
+	for _, hullIndex in groups[1].hullIndices do
+		assignments[1][#assignments[1] + 1] = hullIndex
+	end
+	for _, hullIndex in groups[2].hullIndices do
+		assignments[2][#assignments[2] + 1] = hullIndex
+	end
+
+	local centers = { groups[1].center, groups[2].center }
+	for i = 3, #groups do
+		local target = if distance2(groups[i].center, centers[1]) <= distance2(groups[i].center, centers[2])
+			then 1
+			else 2
+		for _, hullIndex in groups[i].hullIndices do
+			assignments[target][#assignments[target] + 1] = hullIndex
+		end
+	end
+	return {
+		makeGroup(hulls, assignments[1]),
+		makeGroup(hulls, assignments[2]),
+	}
+end
+
+local function kMeansFallback(hulls)
+	local farthestA, farthestB, farthestDistance = 1, 2, -1
+	for i = 1, #hulls - 1 do
+		for j = i + 1, #hulls do
+			local distance = distance2(hulls[i].center, hulls[j].center)
+			if distance > farthestDistance then
+				farthestA, farthestB, farthestDistance = i, j, distance
+			end
+		end
+	end
+
+	local centers = { hulls[farthestA].center, hulls[farthestB].center }
+	local assignments = createTable(#hulls, 0)
+	for _ = 1, 50 do
+		local changed = false
+		local sums = {
+			{ x = 0, y = 0, z = 0, count = 0 },
+			{ x = 0, y = 0, z = 0, count = 0 },
+		}
+		for i, hull in hulls do
+			local target = if distance2(hull.center, centers[1]) <= distance2(hull.center, centers[2]) then 1 else 2
+			if assignments[i] ~= target then
+				assignments[i], changed = target, true
+			end
+			local sum = sums[target]
+			sum.x += hull.center.X
+			sum.y += hull.center.Y
+			sum.z += hull.center.Z
+			sum.count += 1
+		end
+		for i, sum in sums do
+			if sum.count > 0 then
+				centers[i] = newVector3(sum.x / sum.count, sum.y / sum.count, sum.z / sum.count)
+			end
+		end
+		if not changed then
+			break
+		end
+	end
+
+	local indices = { {}, {} }
+	for i, target in assignments do
+		indices[target][#indices[target] + 1] = i
+	end
+	return {
+		makeGroup(hulls, indices[1]),
+		makeGroup(hulls, indices[2]),
+	}
+end
+
+function CSGPHS8.separateHulls(hulls)
+	for _, epsilon in { 0.001, 0.0001, 0 } do
+		local groups = buildConnectedGroups(hulls, epsilon)
+		if #groups == 2 then
+			return groups
+		elseif #groups > 2 then
+			return mergeExtraGroups(hulls, groups)
+		end
+	end
+
+	return kMeansFallback(hulls)
+end
+
+local MOB_SIGNATURES = {
+	{
+		answer = "Golem",
+		sizes = {
+			{ 6.943143, 17.124934, 21.22445 },
+			{ 10.667896, 18.130379, 21.711119 },
+			{ 15.624678, 21.078442, 28.866095 },
+			{ 11.168000, 16.632168, 22.295399 },
+		},
+	},
+	{
+		answer = "Arocknid",
+		sizes = {
+			{ 6.219869, 11.576576, 11.729338 },
+			{ 7.006574, 9.840628, 10.988729 },
+			{ 6.529219, 11.507332, 11.690758 },
+			{ 11.410288, 11.729338, 15.074484 },
+		},
+	},
+	{
+		answer = "Evil Eye",
+		sizes = {
+			{ 4.927636, 6.635971, 11.829517 },
+			{ 4.709663, 6.538452, 11.92519 },
+			{ 4.927637, 6.635971, 11.829517 },
+			{ 2.082426, 2.256552, 6.635970 },
+		},
+	},
+	{
+		answer = "Howler",
+		sizes = {
+			{ 3.138939, 6.833188, 6.838859 },
+			{ 4.069223, 6.587232, 6.974196 },
+		},
+	},
+	{
+		answer = "Zombie Scroom",
+		sizes = {
+			{ 4.99328, 5.078253, 5.08746 },
+			{ 4.82093, 4.855397, 4.899997 },
+			{ 4.400224, 4.714131, 4.793147 },
+		},
+	},
+}
+
+local function classifyGroup(group)
+	local dimensions = { group.size.X, group.size.Y, group.size.Z }
+	table.sort(dimensions)
+	local bestAnswer, bestScore = nil, math.huge
+
+	for _, mob in MOB_SIGNATURES do
+		for _, signature in mob.sizes do
+			local score = 0
+			for axis = 1, 3 do
+				local ratio = dimensions[axis] / signature[axis]
+				score += math.log(ratio) ^ 2
+			end
+			if score < bestScore then
+				bestAnswer, bestScore = mob.answer, score
+			end
+		end
+	end
+	return bestAnswer, bestScore
+end
+
+function CSGPHS8.solve(result, unionCFrame, cameraCFrame)
+	assert(#result.groups == 2, "need 2 mob groups, got " .. #result.groups)
+
+	local visibleGroup, visibleIndex, smallestRayError = nil, nil, math.huge
+	for index, group in result.groups do
+		local worldCenter = unionCFrame:PointToWorldSpace(group.center)
+		local offset = worldCenter - cameraCFrame.Position
+		local depth = offset:Dot(cameraCFrame.LookVector)
+		local rayError = math.huge
+		if depth > 0 then
+			local perpendicularSquared = max(offset:Dot(offset) - depth * depth, 0)
+			rayError = math.sqrt(perpendicularSquared) / depth
+		end
+		if rayError < smallestRayError then
+			visibleGroup, visibleIndex, smallestRayError = group, index, rayError
+		end
+	end
+
+	assert(visibleGroup, "no mob infront of the camera")
+	local answer, signatureScore = classifyGroup(visibleGroup)
+	return answer, visibleIndex, smallestRayError, signatureScore
+end
+
+function CSGPHS8.decodePayload(payload, geomType)
+	local r = { data = payload, at = 0 }
+	local hullCount, positionCount, faceCount = u32(r), u32(r), u32(r)
+	u32(r) -- first hull position count
+	u32(r) -- first hull face count
+	local rawLength = u32(r)
+	local clersBitCount, clersLength = u32(r), u32(r)
+	u32(r) -- positions byte length
+	local bounds = { min = vec3(r), max = vec3(r) }
+
+	local rawFaceRanges, rawFaces, rawPosRanges, rawPositions
+	if rawLength ~= 0 then
+		rawFaceRanges, rawFaces, rawPosRanges, rawPositions = readRawHulls(r)
+	end
+
+	local clersAt = r.at
+	r.at += clersLength
+	local positionValueCount = positionCount * 3
+	local positions = createTable(positionValueCount)
+	for i = 1, positionValueCount do
+		positions[i] = f32(r)
+	end
+
+	local faceRanges, faces, posRanges = decodeFaces(payload, clersAt, clersLength, clersBitCount, hullCount, faceCount)
+
+	local hulls = {}
+	if rawFaceRanges then
+		appendHulls(hulls, rawFaceRanges, rawFaces, rawPosRanges, rawPositions)
+	end
+	local rawHullCount = #hulls
+	appendHulls(hulls, faceRanges, faces, posRanges, positions)
+	local groups = CSGPHS8.separateHulls(hulls)
+
+	return {
+		version = 8,
+		geomType = geomType,
+		bounds = bounds,
+		rawHullCount = rawHullCount,
+		hulls = hulls,
+		groups = groups,
+		models = groups,
+	}
+end
+
+function CSGPHS8.decode(rawData: string)
+	local rawData: buffer = buffer.fromstring(rawData)
+
+	assert(buffer.readstring(rawData, 0, 10) == "CSGPHS\8\0\0\0", "only v8 implemented")
+
+	local compressed = buffer.create(buffer.len(rawData) - 12)
+	buffer.copy(compressed, 0, rawData, 12)
+	local payload = EncodingService:DecompressBuffer(compressed, Enum.CompressionAlgorithm.Zstd)
+	return CSGPHS8.decodePayload(payload, buffer.readu8(rawData, 10))
+end
+
+return CSGPHS8
+]========]
+hxd_env.HXD_EMBEDDED_MODULES["ROGUE/gacha_bot.lua"] = [========[
+local GachaBot = {}
+GachaBot.__index = GachaBot
+
+local ROLLS = {
+    "Ice Essence",
+    "Scroll of Armis",
+    "Scroll of Celeritas",
+    "Scroll of Contrarium",
+    "Scroll of Fimbulvetr",
+    "Scroll of Gelidus",
+    "Scroll of Hoppa",
+    "Scroll of Hystericus",
+    "Scroll of Ignis",
+    "Scroll of Manus Dei",
+    "Scroll of Nocere",
+    "Scroll of Percutiens",
+    "Scroll of Sagitta Sol",
+    "Scroll of Scrupus",
+    "Scroll of Snarvindur",
+    "Scroll of Telorum",
+    "Scroll of Tenebris",
+    "Scroll of Trahere",
+    "Scroll of Trickstus",
+    "Scroll of Velo",
+    "Scroll of Viribus",
+}
+
+local STOP_ROLLS = {
+    "Scroll of Hoppa",
+    "Scroll of Percutiens",
+    "Scroll of Snarvindur",
+}
+
+local RARE_ROLLS = {
+    ["Scroll of Hoppa"] = true,
+    ["Scroll of Percutiens"] = true,
+    ["Scroll of Snarvindur"] = true,
+}
+
+local function lower(value)
+    return tostring(value or ""):lower()
+end
+
+local function trim(value)
+    return tostring(value or ""):match("^%s*(.-)%s*$") or ""
+end
+
+local function tableValueInsensitive(source, wanted)
+    if type(source) ~= "table" then return nil end
+    wanted = lower(wanted)
+    for key, value in pairs(source) do
+        if lower(key) == wanted then
+            return value
+        end
+    end
+    return nil
+end
+
+local function isRollName(name)
+    return table.find(ROLLS, name) ~= nil
+end
+
+function GachaBot.new(context)
+    local self = setmetatable({}, GachaBot)
+    self.ctx = context
+    self.player = context.player
+    self.library = context.library
+    self.utility = context.utility
+    self.mem = context.mem
+    self.options = context.library.Options
+    self.toggles = context.library.Toggles
+    self.running = false
+    self.generation = 0
+    self.state = "OFF"
+    self.action = nil
+    self.spawnedAt = 0
+    self.tooFarSince = nil
+    self.pendingMenuAt = nil
+    self.pendingHopReason = nil
+    self.camperElapsed = 0
+    self.lastSafetyAt = os.clock()
+    self.lastModScanAt = 0
+    self.cachedModerator = nil
+    self.forceAttempt = false
+    self.terminalMenu = false
+    self.rollProgress = {}
+    self.whitelist = {}
+    self.connections = {}
+    self.currentDay = nil
+    local userId = tostring(self.player.UserId)
+    self.runtimePath = "HYDROXIDE/gacha_session_" .. userId .. ".json"
+    self.profilePath = "HYDROXIDE/gacha_profile.json"
+    self.legacyProfilePath = "HYDROXIDE/gacha_profile_" .. userId .. ".json"
+    self.legacyWhitelistPath = "HYDROXIDE/gacha_whitelist.json"
+    self.profile = {}
+    self.sessionSettings = {}
+    self.captchaSolver = nil
+    self.serverHistoryKey = "GachaRecentServers_" .. tostring(game.PlaceId)
+    self:ensureFolder()
+    self:loadProfile()
+    self:loadWhitelist()
+    local shouldResume = self.mem:HasItem("gachabot_started")
+        and self.mem:GetItem("gachabot_started") == "true"
+    if shouldResume then
+        self:loadRuntime()
+    else
+        self:deleteRuntime()
+    end
+    local daysChanged = context.replicated_storage:FindFirstChild("Requests")
+    daysChanged = daysChanged and daysChanged:FindFirstChild("DaysSurvivedChanged")
+    if daysChanged and daysChanged:IsA("RemoteEvent") then
+        self.connections[#self.connections + 1] = daysChanged.OnClientEvent:Connect(function(days)
+            if tonumber(days) then
+                self.currentDay = tonumber(days)
+                if self.running then self:saveRuntime() end
+            end
+        end)
+    end
+    return self
+end
+
+function GachaBot:deleteFile(path)
+    if delfile and isfile and isfile(path) then
+        pcall(delfile, path)
+    end
+end
+
+function GachaBot:loadProfile()
+    self.profile = self:readJson(self.profilePath)
+        or self:readJson(self.legacyProfilePath)
+        or {}
+end
+
+function GachaBot:profileValue(key, fallback)
+    local value = self.profile[key]
+    if value == nil then return fallback end
+    return value
+end
+
+function GachaBot:saveProfile()
+    if self.options and self.toggles then
+        self.profile.proximity = tonumber(self:getOption("GachaProximity", self.profile.proximity or 100)) or 100
+        self.profile.general_webhook = tostring(self:getOption("GachaGeneralWebhook", self.profile.general_webhook or ""))
+        self.profile.scroll_webhook = tostring(self:getOption("GachaScrollWebhook", self.profile.scroll_webhook or ""))
+        self.profile.chair = tostring(self:getOption("GachaChair", self.profile.chair or "None"))
+    end
+    local names = {}
+    for username in pairs(self.whitelist) do names[#names + 1] = username end
+    table.sort(names)
+    self.profile.whitelist = names
+    self:writeJson(self.profilePath, self.profile)
+end
+
+function GachaBot:ensureFolder()
+    if makefolder and isfolder and not isfolder("HYDROXIDE") then
+        pcall(makefolder, "HYDROXIDE")
+    end
+end
+
+function GachaBot:readJson(path)
+    if not (isfile and readfile and isfile(path)) then return nil end
+    local ok, value = pcall(function()
+        return self.ctx.http_service:JSONDecode(readfile(path))
+    end)
+    return ok and type(value) == "table" and value or nil
+end
+
+function GachaBot:writeJson(path, value)
+    if not writefile then return end
+    pcall(function()
+        writefile(path, self.ctx.http_service:JSONEncode(value))
+    end)
+end
+
+function GachaBot:loadWhitelist()
+    local saved = self.profile.whitelist
+    if type(saved) ~= "table" then
+        saved = self:readJson(self.legacyWhitelistPath)
+    end
+    if not saved then return end
+    for _, username in ipairs(saved) do
+        username = lower(trim(username))
+        if username ~= "" then
+            self.whitelist[username] = true
+        end
+    end
+end
+
+function GachaBot:loadRuntime()
+    local saved = self:readJson(self.runtimePath) or {}
+    self.lastGachaDay = tonumber(saved.last_gacha_day)
+    self.currentDay = tonumber(saved.current_day)
+    self.terminalMenu = saved.terminal_menu == true
+    self.sessionSettings = type(saved.settings) == "table" and saved.settings or {}
+    if type(saved.roll_progress) == "table" then
+        self.rollProgress = saved.roll_progress
+    end
+end
+
+function GachaBot:saveRuntime()
+    self:writeJson(self.runtimePath, {
+        last_gacha_day = self.lastGachaDay,
+        current_day = self:getDays() or self.currentDay,
+        roll_progress = self.rollProgress,
+        terminal_menu = self.terminalMenu == true,
+        state = self.state,
+        settings = self:captureSessionSettings(),
+        saved_at = os.time(),
+    })
+end
+
+function GachaBot:deleteRuntime()
+    self:deleteFile(self.runtimePath)
+    self.sessionSettings = {}
+end
+
+function GachaBot:captureSessionSettings()
+    if not self.options or not self.toggles then return self.sessionSettings or {} end
+    return {
+        hop_if_camped = self:getToggle("GachaHopIfCamped", true),
+        camper_minutes = tostring(self:getOption("GachaCamperMinutes", "3")),
+        hop_if_mod = self:getToggle("GachaHopIfMod", true),
+        kick_low_silver = self:getToggle("GachaKickLowSilver", true),
+        safe_server_mode = self:getToggle("GachaSafeServer", false),
+        use_chair = self:getToggle("GachaUseChair", false),
+        stop_rolls = self:getOption("GachaStopRolls", {}),
+    }
+end
+
+function GachaBot:setState(state, detail)
+    self.state = state
+    if self.statusLabel then
+        self.statusLabel:SetText(detail and (state .. ": " .. detail) or state)
+    end
+end
+
+function GachaBot:notify(text, duration)
+    pcall(function()
+        self.library:Notify(text, duration or 4)
+    end)
+end
+
+function GachaBot:isCurrent(token)
+    return self.running and self.generation == token and not (shared and shared.is_unloading)
+end
+
+function GachaBot:getOption(name, fallback)
+    local option = self.options and self.options[name]
+    if option and option.Value ~= nil then return option.Value end
+    return fallback
+end
+
+function GachaBot:getToggle(name, fallback)
+    local toggle = self.toggles and self.toggles[name]
+    if toggle and toggle.Value ~= nil then return toggle.Value end
+    return fallback
+end
+
+function GachaBot:sessionValue(key, fallback)
+    local value = self.sessionSettings and self.sessionSettings[key]
+    if value == nil then return fallback end
+    return value
+end
+
+function GachaBot:isSafeServerMode()
+    return self:getToggle("GachaSafeServer", false)
+end
+
+function GachaBot:getToolType(tool)
+    if not tool or not tool:IsA("Tool") then return nil end
+    local toolType = tool:GetAttribute("ToolType")
+    if toolType ~= nil then return tostring(toolType) end
+    local value = tool:FindFirstChild("ToolType")
+    if value and value:IsA("ValueBase") then return tostring(value.Value) end
+    return nil
+end
+
+function GachaBot:getChairTools()
+    local names, seen = {"None"}, {None = true}
+    local containers = {self.player:FindFirstChildOfClass("Backpack"), self.player.Character}
+    for _, container in ipairs(containers) do
+        if container then
+            for _, tool in ipairs(container:GetChildren()) do
+                if lower(self:getToolType(tool)) == "chair" and not seen[tool.Name] then
+                    seen[tool.Name] = true
+                    names[#names + 1] = tool.Name
+                end
+            end
+        end
+    end
+    table.sort(names, function(a, b)
+        if a == "None" then return true end
+        if b == "None" then return false end
+        return lower(a) < lower(b)
+    end)
+    return names, seen
+end
+
+function GachaBot:refreshChairChoices()
+    local dropdown = self.options and self.options.GachaChair
+    if not dropdown then return end
+    local names, seen = self:getChairTools()
+    dropdown:SetValues(names)
+    local selected = tostring(dropdown.Value or "None")
+    if not seen[selected] then dropdown:SetValue("None") end
+end
+
+function GachaBot:findTool(name)
+    if not name or name == "None" then return nil end
+    local character = self.player.Character
+    local backpack = self.player:FindFirstChildOfClass("Backpack")
+    local tool = character and character:FindFirstChild(name) or nil
+    if tool and tool:IsA("Tool") then return tool end
+    tool = backpack and backpack:FindFirstChild(name) or nil
+    return tool and tool:IsA("Tool") and tool or nil
+end
+
+function GachaBot:isSeatedInChair()
+    local character = self.player.Character
+    local chair = character and character:FindFirstChild("Chair")
+    if not chair then return false end
+    local seat = chair:FindFirstChild("Seat", true)
+    return seat == nil or seat:FindFirstChild("ChairWeld") ~= nil
+end
+
+function GachaBot:ensureChair(token)
+    if not self:getToggle("GachaUseChair", false) or self:isSeatedInChair() then return true end
+    local name = tostring(self:getOption("GachaChair", "None"))
+    local tool = self:findTool(name)
+    if not tool or lower(self:getToolType(tool)) ~= "chair" then
+        self:refreshChairChoices()
+        return false
+    end
+    self.action = "CHAIR"
+    for _ = 1, 4 do
+        if not self:isCurrent(token) or self:isSeatedInChair() then break end
+        local character = self.player.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if humanoid and tool.Parent ~= character then pcall(humanoid.EquipTool, humanoid, tool) end
+        task.wait(0.1)
+        pcall(tool.Activate, tool)
+        local deadline = os.clock() + 0.75
+        repeat task.wait(0.05)
+        until self:isSeatedInChair() or os.clock() >= deadline or not self:isCurrent(token)
+        tool = self:findTool(name) or tool
+    end
+    self.action = nil
+    return self:isSeatedInChair()
+end
+
+function GachaBot:getCharacterRoot(target)
+    local character = target and target.Character
+    return character and character:FindFirstChild("HumanoidRootPart") or nil
+end
+
+function GachaBot:findXenyari()
+    local npcs = workspace:FindFirstChild("NPCs")
+    local npc = npcs and npcs:FindFirstChild("Xenyari")
+    if not npc then return nil end
+    local head = npc:FindFirstChild("Head") or npc:FindFirstChild("HumanoidRootPart") or npc.PrimaryPart
+    local click = npc:FindFirstChildWhichIsA("ClickDetector", true)
+    if not head or not click then return nil end
+    return npc, head, click
+end
+
+function GachaBot:waitForXenyari(token, seconds)
+    local deadline = os.clock() + (seconds or 5)
+    repeat
+        local npc, head, click = self:findXenyari()
+        if npc then return npc, head, click end
+        task.wait(0.15)
+    until os.clock() >= deadline or not self:isCurrent(token)
+    return nil
+end
+
+function GachaBot:isWhitelisted(target)
+    return target == self.player or self.whitelist[lower(target and target.Name)] == true
+end
+
+function GachaBot:isModerator(target)
+    if not target or self:isWhitelisted(target) then return false end
+    local client = self.ctx.cheat_client
+    if client and client.mod_list and table.find(client.mod_list, target.UserId) then return true end
+    if client and client.is_lich_player then
+        local ok, value = pcall(client.is_lich_player, client, target)
+        if ok and value then return true end
+    end
+    return false
+end
+
+function GachaBot:scanModerator()
+    if os.clock() - self.lastModScanAt < 1 then return self.cachedModerator end
+    self.lastModScanAt = os.clock()
+    self.cachedModerator = nil
+    for _, target in ipairs(self.ctx.players:GetPlayers()) do
+        if self:isModerator(target) then
+            self.cachedModerator = target
+            break
+        end
+    end
+    return self.cachedModerator
+end
+
+function GachaBot:scanCampers(head)
+    local result = {}
+    local range = tonumber(self:getOption("GachaProximity", 100)) or 100
+    for _, target in ipairs(self.ctx.players:GetPlayers()) do
+        if not self:isWhitelisted(target) then
+            local root = self:getCharacterRoot(target)
+            if root and (root.Position - head.Position).Magnitude <= range then
+                result[#result + 1] = target
+            end
+        end
+    end
+    return result
+end
+
+function GachaBot:updateCamperClock(campers)
+    local now = os.clock()
+    local delta = math.clamp(now - self.lastSafetyAt, 0, 1)
+    self.lastSafetyAt = now
+    if #campers > 0 then
+        self.camperElapsed += delta
+    end
+end
+
+function GachaBot:camperNames(campers)
+    local names = {}
+    for _, target in ipairs(campers) do names[#names + 1] = target.Name end
+    table.sort(names)
+    return table.concat(names, ", ")
+end
+
+function GachaBot:getWebhook(kind)
+    if kind == "scroll" then
+        return trim(self:getOption("GachaScrollWebhook", ""))
+    end
+    return trim(self:getOption("GachaGeneralWebhook", ""))
+end
+
+function GachaBot:getServerDetails()
+    local serverName = ""
+    local serverRegion = ""
+    local serverInfo = self.ctx.replicated_storage:FindFirstChild("ServerInfo")
+    local currentServer = serverInfo and serverInfo:FindFirstChild(game.JobId)
+    if currentServer then
+        local nameValue = currentServer:FindFirstChild("ServerName")
+        local regionValue = currentServer:FindFirstChild("ServerRegion") or currentServer:FindFirstChild("Region")
+        if nameValue and nameValue:IsA("ValueBase") then serverName = tostring(nameValue.Value) end
+        if regionValue and regionValue:IsA("ValueBase") then serverRegion = tostring(regionValue.Value) end
+    end
+    local playerGui = self.player:FindFirstChildOfClass("PlayerGui")
+    local frame = playerGui and playerGui:FindFirstChild("ServerStatsGui")
+    frame = frame and frame:FindFirstChild("Frame")
+    local stats = frame and frame:FindFirstChild("Stats")
+    if stats then
+        local nameLabel = stats:FindFirstChild("ServerName")
+        local regionLabel = stats:FindFirstChild("ServerRegion")
+        if serverName == "" and nameLabel and nameLabel:IsA("TextLabel") then
+            serverName = nameLabel.Text:match("Server Name: (.+)") or ""
+        end
+        if serverRegion == "" and regionLabel and regionLabel:IsA("TextLabel") then
+            serverRegion = regionLabel.Text:match("Server Region: (.+)") or ""
+        end
+    end
+    return serverName ~= "" and serverName or "Unknown", serverRegion ~= "" and serverRegion or "Unknown Region"
+end
+
+function GachaBot:getPlaceName()
+    if game.PlaceId == 5208655184 then return "Gaia" end
+    if game.PlaceId == 3541987450 then return "Khei" end
+    return tostring(game.PlaceId)
+end
+
+function GachaBot:getBaseWebhookFields()
+    local serverName, serverRegion = self:getServerDetails()
+    return {
+        {name = "Server", value = serverName .. " (" .. serverRegion .. ")", inline = false},
+        {name = "Players", value = string.format("%d/23", #self.ctx.players:GetPlayers()), inline = true},
+        {name = "Place", value = self:getPlaceName(), inline = true},
+        {name = "Days Survived", value = tostring(self:getDays() or "N/A"), inline = true},
+        {name = "Silver", value = tostring(self:getSilver() or "N/A"), inline = true},
+        {name = "Job ID", value = tostring(game.JobId), inline = false},
+    }
+end
+
+function GachaBot:getSessionSummary()
+    local selected = self:getOption("GachaStopRolls", {})
+    local stopRolls = {}
+    for name, enabled in pairs(selected or {}) do
+        if enabled then stopRolls[#stopRolls + 1] = name end
+    end
+    table.sort(stopRolls)
+    local chair = self:getToggle("GachaUseChair", false)
+        and tostring(self:getOption("GachaChair", "None"))
+        or "Disabled"
+    return table.concat({
+        "Detection range: " .. tostring(self:getOption("GachaProximity", 100)) .. " studs",
+        "Hop if camped: " .. tostring(self:getToggle("GachaHopIfCamped", true)),
+        "Camper timeout: " .. tostring(self:getOption("GachaCamperMinutes", "3")) .. " minute(s)",
+        "Hop if mod joins: " .. tostring(self:getToggle("GachaHopIfMod", true)),
+        "Kick if low silver: " .. tostring(self:getToggle("GachaKickLowSilver", true)),
+        "Safe server mode: " .. tostring(self:getToggle("GachaSafeServer", false)),
+        "Chair: " .. chair,
+        "Stop targets: " .. (#stopRolls > 0 and table.concat(stopRolls, ", ") or "None"),
+    }, "\n")
+end
+
+function GachaBot:sendWebhook(kind, content, title, fields, color)
+    local url = self:getWebhook(kind)
+    if url == "" then return end
+    local embedFields = {}
+    for _, field in ipairs(fields or {}) do embedFields[#embedFields + 1] = field end
+    for _, field in ipairs(self:getBaseWebhookFields()) do embedFields[#embedFields + 1] = field end
+    local payload = {
+        username = (self.ctx.cheat_client.config and self.ctx.cheat_client.config.webhook_username) or "Gacha Bot",
+        content = content or "",
+        embeds = {{
+            title = title or "Gacha Bot",
+            color = color or 3447003,
+            fields = embedFields,
+            timestamp = DateTime.now():ToIsoDate(),
+            footer = {text = self.player.Name .. " | " .. tostring(game.JobId)},
+        }},
+    }
+    task.spawn(function()
+        pcall(self.utility.bot_webhook, self.utility, url, payload)
+    end)
+end
+
+function GachaBot:getDays()
+    if self.currentDay ~= nil then return self.currentDay end
+    local ok, value = pcall(self.utility.getPlayerDays, self.utility)
+    if ok and tonumber(value) then
+        self.currentDay = tonumber(value)
+        return self.currentDay
+    end
+    return nil
+end
+
+function GachaBot:getSilver()
+    local requests = self.ctx.replicated_storage:FindFirstChild("Requests")
+    local getter = requests and requests:FindFirstChild("Get")
+    if not getter then return nil end
+    local ok, value = pcall(function()
+        local result = getter:InvokeServer(utf8.char(65532) .. "\240\159\152\131", "Silver")
+        return type(result) == "table" and result.Silver or nil
+    end)
+    return ok and tonumber(value) or nil
+end
+
+function GachaBot:hasForceField(character)
+    return character and character:FindFirstChildOfClass("ForceField") ~= nil
+end
+
+function GachaBot:hasStartMenu()
+    local gui = self.player:FindFirstChildOfClass("PlayerGui")
+    return gui and gui:FindFirstChild("StartMenu") ~= nil
+end
+
+function GachaBot:suppressTeleportErrors()
+    local core = self.ctx.core_gui
+    if not core then return end
+    for _, item in ipairs(core:GetDescendants()) do
+        if item:IsA("TextLabel") or item:IsA("TextButton") then
+            local text = lower(item.Text)
+            if text:find("teleport", 1, true) and (
+                text:find("doesn't exist", 1, true)
+                or text:find("does not exist", 1, true)
+                or text:find("failed", 1, true)
+                or text:find("unable", 1, true)
+            ) then
+                local node = item
+                for _ = 1, 5 do
+                    node = node.Parent
+                    if not node then break end
+                    if node:IsA("GuiObject") then node.Visible = false end
+                end
+            end
+        end
+    end
+end
+
+function GachaBot:returnToMenuOnce()
+    local requests = self.ctx.replicated_storage:FindFirstChild("Requests")
+    local remote = requests and requests:FindFirstChild("ReturnToMenu")
+    if remote then pcall(remote.InvokeServer, remote) end
+end
+
+function GachaBot:menuUntilSuccess(token, emergency)
+    self.action = "MENU"
+    self:setState(emergency and "FF EMERGENCY" or "MENU")
+    local requests = self.ctx.replicated_storage:FindFirstChild("Requests")
+    local fake = requests and requests:FindFirstChild("JoinPublicServer")
+    local nextFake = 0
+    while self:isCurrent(token) and self.player.Character and not self:hasStartMenu() do
+        if emergency then
+            self:suppressTeleportErrors()
+            if not self:hasForceField(self.player.Character) and os.clock() >= nextFake then
+                nextFake = os.clock() + 0.5
+                if fake then pcall(fake.FireServer, fake, "hey") end
+            end
+        end
+        self:returnToMenuOnce()
+        task.wait(emergency and 0.2 or 0.45)
+    end
+    self.action = nil
+    self.spawnedAt = 0
+    self.pendingMenuAt = nil
+    return self:isCurrent(token)
+end
+
+function GachaBot:ensureTeleportQueue()
+    if shared.on_teleport_setup then return end
+    shared.on_teleport_setup = true
+    shared.on_teleport_connection = self.player.OnTeleport:Connect(function()
+        if shared.gacha_teleport_queued then return end
+        shared.gacha_teleport_queued = true
+        local queue = queueteleport or queue_on_teleport
+        if queue then
+            pcall(queue, self.ctx.reexecute_script())
+        end
+    end)
+end
+
+function GachaBot:getServerHistory()
+    if not self.mem:HasItem(self.serverHistoryKey) then return {} end
+    local ok, value = pcall(function()
+        return self.ctx.http_service:JSONDecode(self.mem:GetItem(self.serverHistoryKey))
+    end)
+    return ok and type(value) == "table" and value or {}
+end
+
+function GachaBot:addServerHistory(jobId)
+    local history = self:getServerHistory()
+    history[#history + 1] = jobId
+    while #history > 30 do table.remove(history, 1) end
+    pcall(function()
+        self.mem:SetItem(self.serverHistoryKey, self.ctx.http_service:JSONEncode(history))
+    end)
+end
+
+function GachaBot:getAvailableServers(ignoreHistory)
+    local serverInfo = self.ctx.replicated_storage:FindFirstChild("ServerInfo")
+    if not serverInfo then return {} end
+    local history = {}
+    if not ignoreHistory then
+        for _, jobId in ipairs(self:getServerHistory()) do history[jobId] = true end
+    end
+    local result = {}
+    for _, server in ipairs(serverInfo:GetChildren()) do
+        if server.Name ~= game.JobId and not history[server.Name] then
+            local available = true
+            local playersValue = server:FindFirstChild("Players")
+            if playersValue and playersValue:IsA("StringValue") then
+                local ok, players = pcall(self.ctx.http_service.JSONDecode, self.ctx.http_service, playersValue.Value)
+                if ok and type(players) == "table" then available = #players < 23 end
+            end
+            if available then result[#result + 1] = server.Name end
+        end
+    end
+    for index = #result, 2, -1 do
+        local swap = math.random(index)
+        result[index], result[swap] = result[swap], result[index]
+    end
+    return result
+end
+
+function GachaBot:serverhop(token, reason, campers)
+    if not self:isCurrent(token) or self.action == "HOPPING" then return end
+    self.action = "HOPPING"
+    self:setState("HOPPING", reason)
+    self:saveRuntime()
+    self:ensureTeleportQueue()
+    local fields = {
+        {name = "Reason", value = tostring(reason), inline = false},
+    }
+    if campers and #campers > 0 then
+        fields[#fields + 1] = {name = "Campers", value = self:camperNames(campers), inline = false}
+    end
+    self:sendWebhook("general", "", "Gacha bot serverhop", fields, 16753920)
+    if self.player.Character then self:menuUntilSuccess(token, false) end
+    self.action = "HOPPING"
+    local requests = self.ctx.replicated_storage:FindFirstChild("Requests")
+    local join = requests and requests:FindFirstChild("JoinPublicServer")
+    while self:isCurrent(token) do
+        local servers = self:getAvailableServers(false)
+        if #servers == 0 then
+            self.mem:RemoveItem(self.serverHistoryKey)
+            servers = self:getAvailableServers(true)
+        end
+        if not join or #servers == 0 then
+            task.wait(3)
+            continue
+        end
+        for _, jobId in ipairs(servers) do
+            if not self:isCurrent(token) then return end
+            self:addServerHistory(jobId)
+            pcall(join.FireServer, join, jobId)
+            local deadline = os.clock() + 12
+            repeat task.wait(0.25)
+            until not self:isCurrent(token) or os.clock() >= deadline
+        end
+    end
+end
+
+function GachaBot:spawnFromMenu(token, head)
+    self:setState("MENU", "waiting for a clean area")
+    local cleanSince = nil
+    local nextPlayAttempt = 0
+    while self:isCurrent(token) and (not self.player.Character or self:hasStartMenu()) do
+        if not self:isSafeServerMode() then
+            local moderator = self:scanModerator()
+            if moderator then
+                if self:getToggle("GachaHopIfMod", true) then
+                    return self:serverhop(token, "Moderator detected: " .. moderator.Name)
+                end
+                cleanSince = nil
+                task.wait(0.25)
+                continue
+            end
+
+            local campers = self:scanCampers(head)
+            self:updateCamperClock(campers)
+            if #campers > 0 then
+                cleanSince = nil
+                local minutes = math.max(0.1, tonumber(self:getOption("GachaCamperMinutes", "3")) or 3)
+                if self:getToggle("GachaHopIfCamped", true) and self.camperElapsed >= minutes * 60 then
+                    self:notify("Camper detected - hopping server")
+                    return self:serverhop(token, "Camper detected", campers)
+                end
+                task.wait(0.15)
+                continue
+            end
+
+            cleanSince = cleanSince or os.clock()
+            if os.clock() - cleanSince < 2 then
+                task.wait(0.1)
+                continue
+            end
+        end
+
+        local gui = self.player:FindFirstChildOfClass("PlayerGui")
+        local menu = gui and gui:FindFirstChild("StartMenu")
+        local choices = menu and menu:FindFirstChild("Choices")
+        local play = choices and choices:FindFirstChild("Play")
+        if play and play:IsA("GuiButton") and os.clock() >= nextPlayAttempt then
+            nextPlayAttempt = os.clock() + 3.5
+            self:setState("SPAWNING")
+            if type(replicatesignal) == "function" then
+                pcall(replicatesignal, play.MouseButton1Click)
+            end
+            if type(firesignal) == "function" then
+                pcall(firesignal, play.MouseButton1Click)
+            end
+        end
+        task.wait(0.5)
+    end
+end
+
+function GachaBot:activateClickDetector(clickDetector)
+    if type(replicatesignal) == "function" then
+        local readable, signal = pcall(function()
+            return clickDetector and clickDetector.MouseActionReplicated
+        end)
+        if readable and signal then
+            local entered = pcall(replicatesignal, signal, self.player, 1)
+            local clicked = pcall(replicatesignal, signal, self.player, 0)
+            pcall(replicatesignal, signal, self.player, 2)
+            if entered and clicked then return true end
+        end
+    end
+    return false
+end
+
+function GachaBot:readPhysicalConfig(union)
+    local function valid(value)
+        return type(value) == "string" and #value > 100
+    end
+
+    local function readVolt()
+        if type(gethiddenproperty) ~= "function" then return nil end
+        local ok, value = pcall(gethiddenproperty, union, "PhysicalConfigData")
+        if not ok then return nil end
+        if valid(value) then return value, "gethiddenproperty" end
+        if type(value) == "table" then
+            if valid(value[2]) then return value[2], "gethiddenproperty[2]" end
+            for _, item in pairs(value) do
+                if valid(item) then return item, "gethiddenproperty table" end
+            end
+        end
+        return nil
+    end
+
+    local function readPotassium()
+        local readers = {}
+        if type(getpcd) == "function" then readers[#readers + 1] = getpcd end
+        if type(getpcdprop) == "function" then readers[#readers + 1] = getpcdprop end
+        for _, reader in ipairs(readers) do
+            local ok, hash, binary = pcall(reader, union)
+            if ok then
+                if valid(binary) then return binary, "getpcd binary" end
+                if valid(hash) then return hash, "getpcd primary" end
+            end
+        end
+        return nil
+    end
+
+    local executorName = ""
+    if type(identifyexecutor) == "function" then
+        local ok, name = pcall(identifyexecutor)
+        if ok then executorName = tostring(name):lower() end
+    end
+
+    local firstReader = executorName:find("potassium", 1, true) and readPotassium or readVolt
+    local secondReader = firstReader == readPotassium and readVolt or readPotassium
+    local stream, source = firstReader()
+    if stream then return stream, source end
+    stream, source = secondReader()
+    if stream then return stream, source end
+
+    if type(gethiddenproperty) == "function" then
+        for _, property in ipairs({"BinaryData", "MeshData", "RawData", "ConfigData"}) do
+            local ok, value = pcall(gethiddenproperty, union, property)
+            if ok and valid(value) then return value, property end
+        end
+    end
+    return nil
+end
+
+function GachaBot:getCaptchaSolver()
+    if self.captchaSolver then return self.captchaSolver end
+    if type(self.ctx.load_module) ~= "function" then
+        return nil, "captcha module loader unavailable"
+    end
+    local ok, solver = pcall(self.ctx.load_module, "DEPENDENCIES/Captcha.lua")
+    if not ok or type(solver) ~= "table" then
+        return nil, tostring(solver or "captcha module failed to load")
+    end
+    if type(solver.decode) ~= "function" or type(solver.solve) ~= "function" then
+        return nil, "captcha module is invalid"
+    end
+    self.captchaSolver = solver
+    return solver
+end
+
+function GachaBot:solveCaptcha(union)
+    local solver, loadError = self:getCaptchaSolver()
+    if not solver then return nil, loadError end
+    local stream, source = self:readPhysicalConfig(union)
+    if type(stream) ~= "string" then return nil, "PhysicalConfigData unavailable" end
+    if type(gethiddenproperty) ~= "function" then return nil, "gethiddenproperty unavailable" end
+    local cameraOk, cameraCFrame = pcall(gethiddenproperty, union.Parent, "CameraCFrame")
+    if not cameraOk or typeof(cameraCFrame) ~= "CFrame" then return nil, "CameraCFrame unavailable" end
+    local ok, answer = pcall(function()
+        local decoded = solver.decode(stream)
+        return solver.solve(decoded, union.CFrame, cameraCFrame)
+    end)
+    if not ok then
+        return nil, string.format("%s: %s", tostring(source or "unknown PCD source"), tostring(answer))
+    end
+    return answer
+end
+
+function GachaBot:clickCaptchaAnswer(captcha)
+    local main = captcha and captcha:FindFirstChild("MainFrame")
+    local options = main and main:FindFirstChild("Options")
+    local viewport = main and main:FindFirstChild("Viewport")
+    local union = viewport and viewport:FindFirstChild("Union")
+    if not options or not union then return false, "captcha UI incomplete" end
+    local answer, err = self:solveCaptcha(union)
+    if not answer then return false, err end
+    local button = options:FindFirstChild(answer)
+    if not button or not button:IsA("GuiObject") then return false, "answer button missing: " .. answer end
+    if self.utility.random_wait then pcall(self.utility.random_wait, self.utility, true) end
+    if type(replicatesignal) ~= "function" then return false, "replicatesignal unavailable" end
+    local clicked, clickError = pcall(replicatesignal, button.MouseButton1Click)
+    if not clicked then return false, clickError end
+    return true, answer
+end
+
+function GachaBot:classifyDialogue(data)
+    local message = tableValueInsensitive(data, "msg")
+        or tableValueInsensitive(data, "message")
+        or tableValueInsensitive(data, "text")
+    message = lower(message)
+    if message:find("necessary funds", 1, true) then return "LOW_SILVER" end
+    if message:find("fine scroll", 1, true) then return "SUCCESS" end
+    if message:find("examine the scroll more thoroughly", 1, true) then return "LOCKED" end
+    return nil
+end
+
+function GachaBot:connectDialogue(handler)
+    local connections = {}
+    local remote = self.ctx.get_dialogue_remote and self.ctx.get_dialogue_remote() or nil
+    local function connect(candidate)
+        if not candidate or not candidate:IsA("RemoteEvent") then return end
+        connections[#connections + 1] = candidate.OnClientEvent:Connect(function(data)
+            if type(data) == "table" and (
+                tableValueInsensitive(data, "choices") ~= nil
+                or tableValueInsensitive(data, "speaker") ~= nil
+                or tableValueInsensitive(data, "msg") ~= nil
+            ) then
+                handler(candidate, data)
+            end
+        end)
+    end
+    if remote then
+        connect(remote)
+    else
+        local requests = self.ctx.replicated_storage:FindFirstChild("Requests")
+        if requests then
+            for _, candidate in ipairs(requests:GetChildren()) do connect(candidate) end
+        end
+    end
+    return connections
+end
+
+function GachaBot:disconnectList(connections)
+    for _, connection in ipairs(connections or {}) do
+        pcall(connection.Disconnect, connection)
+    end
+end
+
+function GachaBot:snapshotRolls()
+    local counts = {}
+    for _, container in ipairs({self.player:FindFirstChildOfClass("Backpack"), self.player.Character}) do
+        if container then
+            for _, item in ipairs(container:GetChildren()) do
+                if isRollName(item.Name) then counts[item.Name] = (counts[item.Name] or 0) + 1 end
+            end
+        end
+    end
+    return counts
+end
+
+function GachaBot:findNewRoll(before, observed)
+    if observed and isRollName(observed) then return observed end
+    local after = self:snapshotRolls()
+    for name, count in pairs(after) do
+        if count > (before[name] or 0) then return name end
+    end
+    return nil
+end
+
+function GachaBot:stopTargetsComplete()
+    local selected = self:getOption("GachaStopRolls", {})
+    local hasTarget = false
+    for name, enabled in pairs(selected or {}) do
+        if enabled then
+            hasTarget = true
+            if not self.rollProgress[name] then return false end
+        end
+    end
+    return hasTarget
+end
+
+function GachaBot:recordRoll(name)
+    local selected = self:getOption("GachaStopRolls", {})
+    if selected and selected[name] then
+        self.rollProgress[name] = true
+        self:saveRuntime()
+    end
+    local rare = RARE_ROLLS[name] == true
+    local complete = self:stopTargetsComplete()
+    local mention = rare and "@here " or ""
+    local fields = {
+        {name = "Roll", value = name, inline = true},
+    }
+    local title = complete and "Gacha target completed - stopping bot" or "Gacha roll"
+    self:sendWebhook("scroll", mention, title, fields, rare and 15158332 or 3447003)
+    return complete
+end
+
+function GachaBot:performGacha(token, npc, clickDetector)
+    if not self:isCurrent(token) or self.action then return end
+    self.action = "GACHA"
+    self:setState("GACHA")
+    local before = self:snapshotRolls()
+    local observedRoll = nil
+    local backpack = self.player:FindFirstChildOfClass("Backpack")
+    local childConnection = backpack and backpack.ChildAdded:Connect(function(item)
+        if isRollName(item.Name) then observedRoll = item.Name end
+    end) or nil
+    local result = nil
+    local activeRemote = nil
+    local dialogueConnections = self:connectDialogue(function(remote, data)
+        if result then return end
+        local speaker = tableValueInsensitive(data, "speaker")
+        if speaker and not lower(speaker):find("xenyari", 1, true) then return end
+        activeRemote = remote
+        local classified = self:classifyDialogue(data)
+        if classified then result = classified end
+        local choices = tableValueInsensitive(data, "choices")
+        local selected = type(choices) == "table" and choices[1] or nil
+        task.defer(function()
+            task.wait(0.08)
+            if selected then
+                pcall(remote.FireServer, remote, {choice = selected})
+            elseif not choices then
+                pcall(remote.FireServer, remote, {exit = true})
+            end
+        end)
+    end)
+
+    local autoDialogue = self.toggles and self.toggles.auto_dialogue
+    local restoreAutoDialogue = autoDialogue and autoDialogue.Value or false
+    if restoreAutoDialogue then pcall(autoDialogue.SetValue, autoDialogue, false) end
+
+    local gui = self.player:FindFirstChildOfClass("PlayerGui")
+    local deadline = os.clock() + 15
+    local nextClick = 0
+    while self:isCurrent(token) and os.clock() < deadline and not result do
+        if not self:isSafeServerMode() and not self:hasForceField(self.player.Character) then break end
+        local captcha = gui and gui:FindFirstChild("Captcha")
+        if captcha then
+            local solved, solveError = self:clickCaptchaAnswer(captcha)
+            if not solved then
+                self:notify("Captcha solver failed: " .. tostring(solveError), 6)
+                result = "SOLVER_FAILED"
+                local toggle = self.toggles and self.toggles.GachaBot
+                task.defer(function()
+                    if toggle and toggle.Value then toggle:SetValue(false) end
+                end)
+                self:Stop(false)
+                break
+            end
+            local closeDeadline = os.clock() + 12
+            repeat task.wait(0.1)
+            until not gui:FindFirstChild("Captcha") or os.clock() >= closeDeadline or not self:isCurrent(token)
+        elseif os.clock() >= nextClick then
+            nextClick = os.clock() + 0.35
+            self:activateClickDetector(clickDetector)
+        end
+        task.wait(0.05)
+    end
+
+    if result == "SUCCESS" then
+        local rollDeadline = os.clock() + 2
+        repeat task.wait(0.1)
+        until observedRoll or os.clock() >= rollDeadline or not self:isCurrent(token)
+    end
+
+    if activeRemote and not result then pcall(activeRemote.FireServer, activeRemote, {exit = true}) end
+    self:disconnectList(dialogueConnections)
+    if childConnection then pcall(childConnection.Disconnect, childConnection) end
+    if restoreAutoDialogue and autoDialogue then pcall(autoDialogue.SetValue, autoDialogue, true) end
+    self.action = nil
+
+    if not self:isCurrent(token) then return end
+    if not self:isSafeServerMode() and not self:hasForceField(self.player.Character) then
+        return self:menuUntilSuccess(token, true)
+    end
+
+    if result == "LOW_SILVER" then
+        self:setState("LOW SILVER")
+        self:sendWebhook("general", "", "Gacha bot has insufficient silver", {
+            {name = "Silver", value = tostring(self:getSilver() or "N/A"), inline = true},
+        }, 15105570)
+        self:menuUntilSuccess(token, false)
+        if self:getToggle("GachaKickLowSilver", true) then
+            self:Stop(false)
+            task.wait(0.25)
+            self.player:Kick("Gacha bot: insufficient silver")
+        else
+            self.terminalMenu = true
+            self:setState("LOW SILVER", "sitting in menu")
+            self:saveRuntime()
+        end
+        return
+    end
+
+    if result == "SUCCESS" or result == "LOCKED" then
+        self.lastGachaDay = self:getDays() or self.lastGachaDay
+        self.forceAttempt = false
+        self:saveRuntime()
+    end
+
+    if result == "SUCCESS" then
+        local roll = self:findNewRoll(before, observedRoll)
+        if roll then
+            local complete = self:recordRoll(roll)
+            if complete then
+                self:notify("Gacha scroll target reached - stopping bot", 6)
+                self:menuUntilSuccess(token, false)
+                self:Stop(false)
+                task.defer(function()
+                    local toggle = self.toggles and self.toggles.GachaBot
+                    if toggle and toggle.Value then toggle:SetValue(false) end
+                end)
+                return
+            end
+        else
+            self:sendWebhook("scroll", "", "Gacha succeeded but roll was not detected", {
+                {name = "Days Survived", value = tostring(self:getDays() or "N/A"), inline = true},
+                {name = "Silver Remaining", value = tostring(self:getSilver() or "N/A"), inline = true},
+            }, 9807270)
+        end
+    elseif result == "LOCKED" then
+        self:sendWebhook("general", "", "Already gacha'd this day", {
+            {name = "Days Survived", value = tostring(self.lastGachaDay or "N/A"), inline = true},
+        }, 9807270)
+    elseif result == "SOLVER_FAILED" then
+        self:menuUntilSuccess(token, false)
+        return self:serverhop(token, "Captcha solver failed")
+    else
+        self:menuUntilSuccess(token, false)
+        return self:serverhop(token, "Xenyari interaction timed out")
+    end
+end
+
+function GachaBot:handleSpawned(token, npc, head, click)
+    local character = self.player.Character
+    if not character then return end
+    if not self:isSafeServerMode() and not self:hasForceField(character) then
+        return self:menuUntilSuccess(token, true)
+    end
+    if self.spawnedAt == 0 then
+        self.spawnedAt = os.clock()
+        self.lastSafetyAt = os.clock()
+        self:refreshChairChoices()
+    end
+
+    if not self:isSafeServerMode() then
+        local moderator = self:scanModerator()
+        if moderator then
+            if self:getToggle("GachaHopIfMod", true) then
+                return self:serverhop(token, "Moderator detected: " .. moderator.Name)
+            end
+            return self:menuUntilSuccess(token, false)
+        end
+
+        local campers = self:scanCampers(head)
+        self:updateCamperClock(campers)
+        if #campers > 0 then
+            if not self.pendingMenuAt then self.pendingMenuAt = os.clock() + math.random(1, 4) end
+            local minutes = math.max(0.1, tonumber(self:getOption("GachaCamperMinutes", "3")) or 3)
+            if self:getToggle("GachaHopIfCamped", true) and self.camperElapsed >= minutes * 60 then
+                self:notify("Camper detected - hopping server")
+                return self:serverhop(token, "Camper detected", campers)
+            end
+        end
+    end
+
+    local root = self:getCharacterRoot(self.player)
+    if root and (root.Position - head.Position).Magnitude > 15 then
+        self.tooFarSince = self.tooFarSince or os.clock()
+        if os.clock() - self.tooFarSince >= 6 then
+            local message = string.format("@here %s Too far from Xenyari (maybe dead) - kicking", self.player.Name)
+            self:sendWebhook("general", message, "Gacha bot stopped", {
+                {name = "Distance", value = string.format("%.1f studs", (root.Position - head.Position).Magnitude), inline = true},
+            }, 15158332)
+            self:Stop(false)
+            task.wait(0.25)
+            self.player:Kick("Too far from Xenyari (maybe dead)")
+            return
+        end
+    else
+        self.tooFarSince = nil
+    end
+
+    if not self:isSafeServerMode() then
+        if self.pendingMenuAt and os.clock() >= self.pendingMenuAt then
+            return self:menuUntilSuccess(token, false)
+        end
+        if self.pendingMenuAt then
+            self:setState("PLAYER NEARBY", "waiting to menu")
+            return
+        end
+        if os.clock() - self.spawnedAt >= 90 then
+            return self:menuUntilSuccess(token, false)
+        end
+    end
+
+    local currentDay = self:getDays()
+    local shouldGacha = self.forceAttempt or (currentDay and self.lastGachaDay and currentDay > self.lastGachaDay)
+    if self.lastGachaDay == nil and not self.forceAttempt then shouldGacha = true end
+    if shouldGacha then
+        return self:performGacha(token, npc, click)
+    end
+    self:ensureChair(token)
+    self:setState("IDLE", "waiting for the next day")
+end
+
+function GachaBot:run(token)
+    while self:isCurrent(token) do
+        if self.terminalMenu then
+            if self.player.Character then self:menuUntilSuccess(token, false) end
+            task.wait(0.5)
+            continue
+        end
+        local npc, head, click = self:waitForXenyari(token, 5)
+        if not npc then
+            self:serverhop(token, "Xenyari missing")
+            continue
+        end
+        if not self.player.Character or self:hasStartMenu() then
+            self:spawnFromMenu(token, head)
+        else
+            self:handleSpawned(token, npc, head, click)
+        end
+        task.wait(0.25)
+    end
+end
+
+function GachaBot:canStartExplicitly()
+    local _, head = self:findXenyari()
+    local root = self:getCharacterRoot(self.player)
+    return head and root and (root.Position - head.Position).Magnitude <= 15
+end
+
+function GachaBot:Start(resume)
+    if self.running then return true end
+    if not resume and not self:canStartExplicitly() then
+        self:notify("Stand within 15 studs of Xenyari before starting Gacha Bot", 6)
+        task.defer(function()
+            local toggle = self.toggles and self.toggles.GachaBot
+            if toggle and toggle.Value then toggle:SetValue(false) end
+        end)
+        return false
+    end
+    if type(gethiddenproperty) ~= "function" then
+        self:notify("Gacha Bot requires Volt or Potassium PCD support", 6)
+        return false
+    end
+    if not resume then
+        self.lastGachaDay = nil
+        self.currentDay = nil
+        self.rollProgress = {}
+        self.sessionSettings = {}
+        self.terminalMenu = false
+    end
+    self.running = true
+    self.generation += 1
+    self.forceAttempt = true
+    self.camperElapsed = 0
+    self.lastSafetyAt = os.clock()
+    self.mem:SetItem("gachabot_started", "true")
+    self:refreshChairChoices()
+    self:saveProfile()
+    self:saveRuntime()
+    self:sendWebhook("general", "", resume and "Gacha bot resumed" or "Gacha bot started", {
+        {name = "Settings", value = self:getSessionSummary(), inline = false},
+    }, 5763719)
+    local token = self.generation
+    task.spawn(function() self:run(token) end)
+    return true
+end
+
+function GachaBot:Stop(userInitiated)
+    self.running = false
+    self.generation += 1
+    self.action = nil
+    self.pendingMenuAt = nil
+    self.pendingHopReason = nil
+    self:setState("OFF")
+    self.mem:RemoveItem("gachabot_started")
+    self:deleteRuntime()
+end
+
+function GachaBot:Destroy()
+    local preserve = self.mem:HasItem("gachabot_started")
+        and self.mem:GetItem("gachabot_started") == "true"
+    self.running = false
+    self.generation += 1
+    self.action = nil
+    if preserve then self:saveRuntime() else self:deleteRuntime() end
+    self:disconnectList(self.connections)
+    table.clear(self.connections)
+end
+
+function GachaBot:bindPersistence()
+    local function saveSession()
+        if self.running or (self.mem:HasItem("gachabot_started") and self.mem:GetItem("gachabot_started") == "true") then
+            self:saveRuntime()
+        end
+    end
+    for _, name in ipairs({"GachaHopIfCamped", "GachaHopIfMod", "GachaKickLowSilver", "GachaSafeServer", "GachaUseChair"}) do
+        local control = self.toggles[name]
+        if control then control:OnChanged(saveSession) end
+    end
+    for _, name in ipairs({"GachaCamperMinutes", "GachaStopRolls"}) do
+        local control = self.options[name]
+        if control then control:OnChanged(saveSession) end
+    end
+end
+
+function GachaBot:whitelistValues()
+    local values = {"None"}
+    for username in pairs(self.whitelist) do values[#values + 1] = username end
+    table.sort(values, function(a, b)
+        if a == "None" then return true end
+        if b == "None" then return false end
+        return a < b
+    end)
+    return values
+end
+
+function GachaBot:addWhitelistFromInput()
+    local name = lower(trim(self:getOption("GachaWhitelistName", "")))
+    if name == "" then return end
+    self.whitelist[name] = true
+    if self.options.GachaWhitelist then
+        self.options.GachaWhitelist:SetValues(self:whitelistValues())
+        self.options.GachaWhitelist:SetValue(name)
+    end
+    if self.options.GachaWhitelistName then self.options.GachaWhitelistName:SetValue("") end
+end
+
+function GachaBot:removeSelectedWhitelist()
+    local name = lower(self:getOption("GachaWhitelist", "None"))
+    if name == "none" or name == "" then return end
+    self.whitelist[name] = nil
+    if self.options.GachaWhitelist then
+        self.options.GachaWhitelist:SetValues(self:whitelistValues())
+        self.options.GachaWhitelist:SetValue("None")
+    end
+end
+
+function GachaBot:BuildUI(tab)
+    local main = tab:AddLeftGroupbox("Gacha Bot")
+    local settings = tab:AddRightGroupbox("Gacha Bot Settings")
+    local chairValues, availableChairs = self:getChairTools()
+    local chairDefault = tostring(self:profileValue("chair", "None"))
+    if not availableChairs[chairDefault] then chairDefault = "None" end
+    self.statusLabel = main:AddLabel({Text = "OFF", DoesWrap = true})
+    main:AddToggle("GachaBot", {
+        Text = "Gacha Bot",
+        Default = false,
+        Tooltip = "Start near Xenyari. Resumes automatically after serverhops.",
+        Callback = function(value)
+            if value then
+                local resume = self.resumeRequested
+                    or (self.mem:HasItem("gachabot_started") and self.mem:GetItem("gachabot_started") == "true")
+                self:Start(resume)
+            else
+                self:Stop(true)
+            end
+        end,
+    })
+    main:AddSlider("GachaProximity", {
+        Text = "Player Detection Range",
+        Default = tonumber(self:profileValue("proximity", 100)) or 100,
+        Min = 0,
+        Max = 1000,
+        Rounding = 0,
+        Suffix = " studs",
+    })
+    main:AddToggle("GachaHopIfCamped", {
+        Text = "Hop if Camped",
+        Default = self:sessionValue("hop_if_camped", true),
+    })
+    main:AddInput("GachaCamperMinutes", {
+        Text = "Camper Timeout (minutes)",
+        Default = tostring(self:sessionValue("camper_minutes", "3")),
+        Numeric = true,
+        Finished = true,
+        Placeholder = "3",
+    })
+    main:AddToggle("GachaHopIfMod", {
+        Text = "Hop if Mod Joins",
+        Default = self:sessionValue("hop_if_mod", true),
+        Tooltip = "If disabled, stays in menu until the moderator leaves.",
+    })
+    main:AddToggle("GachaKickLowSilver", {
+        Text = "Kick if Low Silver",
+        Default = self:sessionValue("kick_low_silver", true),
+        Tooltip = "If disabled, stays in menu forever after Xenyari reports insufficient funds.",
+    })
+    main:AddToggle("GachaSafeServer", {
+        Text = "Safe Server Mode",
+        Default = self:sessionValue("safe_server_mode", false),
+        Tooltip = "Bot ignores all safety measures, only automate gacha",
+    })
+    main:AddDivider()
+    main:AddToggle("GachaUseChair", {
+        Text = "Use Chair",
+        Default = self:sessionValue("use_chair", false),
+    })
+    main:AddDropdown("GachaChair", {
+        Text = "Chair",
+        Values = chairValues,
+        Default = chairDefault,
+        Multi = false,
+        Searchable = false,
+        AllowNull = false,
+    })
+    main:AddButton({
+        Text = "Refresh Chairs",
+        Func = function() self:refreshChairChoices() end,
+    })
+    settings:AddDropdown("GachaStopRolls", {
+        Text = "Stop on Scroll",
+        Values = STOP_ROLLS,
+        Default = self:sessionValue("stop_rolls", {}),
+        Multi = true,
+        Searchable = false,
+        AllowNull = true,
+        Tooltip = "With multiple selections, stops after every selected roll has been obtained.",
+    })
+    settings:AddInput("GachaGeneralWebhook", {
+        Text = "General Webhook",
+        Default = self:profileValue("general_webhook", (self.ctx.cheat_client.config and self.ctx.cheat_client.config.webhook) or ""),
+        Numeric = false,
+        Finished = true,
+        Placeholder = "Discord webhook URL",
+    })
+    settings:AddInput("GachaScrollWebhook", {
+        Text = "Scroll Webhook",
+        Default = self:profileValue("scroll_webhook", (self.ctx.cheat_client.config and self.ctx.cheat_client.config.webhook) or ""),
+        Numeric = false,
+        Finished = true,
+        Placeholder = "Discord webhook URL",
+    })
+    settings:AddButton({
+        Text = "Test Webhooks",
+        Func = function()
+            local sent = 0
+            if self:getWebhook("general") ~= "" then
+                sent += 1
+                self:sendWebhook("general", "||" .. self.player.Name .. "|| Gacha Bot general webhook test", "General webhook test", {
+                    {name = "Settings", value = self:getSessionSummary(), inline = false},
+                }, 5763719)
+            end
+            if self:getWebhook("scroll") ~= "" then
+                sent += 1
+                self:sendWebhook("scroll", "||" .. self.player.Name .. "|| Gacha Bot scroll webhook test", "Scroll webhook test", {
+                    {name = "Roll", value = "Test roll", inline = true},
+                }, 3447003)
+            end
+            self:notify(sent > 0 and ("Sent " .. tostring(sent) .. " webhook test(s)") or "Enter a webhook URL first", 5)
+        end,
+    })
+    settings:AddDivider()
+    settings:AddInput("GachaWhitelistName", {
+        Text = "Whitelist Username",
+        Default = "",
+        Numeric = false,
+        Finished = true,
+        Placeholder = "username",
+    })
+    settings:AddDropdown("GachaWhitelist", {
+        Text = "Saved Whitelist",
+        Values = self:whitelistValues(),
+        Default = "None",
+        Multi = false,
+        Searchable = true,
+        AllowNull = false,
+    })
+    settings:AddButton({
+        Text = "Add Whitelist",
+        Func = function() self:addWhitelistFromInput() end,
+    }):AddButton({
+        Text = "Remove Selected",
+        Func = function() self:removeSelectedWhitelist() end,
+    })
+
+    self:bindPersistence()
+
+    task.delay(4, function()
+        if self.mem:HasItem("gachabot_started") and self.mem:GetItem("gachabot_started") == "true" then
+            local toggle = self.toggles and self.toggles.GachaBot
+            if toggle and not toggle.Value then
+                self.resumeRequested = true
+                toggle:SetValue(true)
+                self.resumeRequested = false
+                if not self.running then self:Start(true) end
+            end
+        end
+    end)
+end
+
+return {
+    new = function(context)
+        return GachaBot.new(context)
+    end,
+}
+]========]
+-- HXD_EMBEDDED_MODULES_END
+
 hxd_env.HXD_REMOTE_ROOT = hxd_env.HXD_REMOTE_ROOT or HXD_DEFAULT_REMOTE_ROOT
 hxd_env.HXD_LOCAL_ROOT = hxd_env.HXD_LOCAL_ROOT or HXD_DEFAULT_LOCAL_ROOT
 
@@ -103,6 +2122,16 @@ local function hxd_load_local(path)
 end
 
 local function hxd_load(path)
+    local embedded_modules = hxd_env.HXD_EMBEDDED_MODULES
+    local embedded_code = type(embedded_modules) == "table" and embedded_modules[path]
+    if type(embedded_code) == "string" then
+        local fn, err = loadstring(embedded_code)
+        if not fn then
+            error(err)
+        end
+        return fn()
+    end
+
     if hxd_env.HXD_LOAD_MODE == "local" and hxd_has_local(path) then
         return hxd_load_local(path)
     end
@@ -1896,6 +3925,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
                 environment.SalenwareRemote = nil
                 environment.SalenwareRemoteAdapter = nil
+            end)
+
+            pcall(function()
+                if cheat_client and cheat_client.gacha_bot then
+                    cheat_client.gacha_bot:Destroy()
+                    cheat_client.gacha_bot = nil
+                end
             end)
 
             task.wait(0.5)
@@ -7588,6 +9624,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         pcall(function()
                             if FindFirstChild(plr.PlayerGui.StartMenu, "Choices") and
                                FindFirstChild(plr.PlayerGui.StartMenu.Choices, "Play") then
+                                pcall(replicatesignal, plr.PlayerGui.StartMenu.Choices.Play.MouseButton1Click)
                                 firesignal(plr.PlayerGui.StartMenu.Choices.Play.MouseButton1Click)
                             end
                         end)
@@ -18064,6 +20101,32 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             end
 
+            pcall(function()
+                local loaded, gacha_module = pcall(hxd_load, "ROGUE/gacha_bot.lua")
+                if loaded and type(gacha_module) == "table" and type(gacha_module.new) == "function" then
+                    cheat_client.gacha_bot = gacha_module.new({
+                        player = plr,
+                        players = plrs,
+                        replicated_storage = rps,
+                        core_gui = cg,
+                        virtual_input = vim,
+                        http_service = Services.HttpService,
+                        utility = utility,
+                        library = library,
+                        mem = mem,
+                        cheat_client = cheat_client,
+                        get_dialogue_remote = function()
+                            return dialogue_remote
+                        end,
+                        reexecute_script = hxd_reexecute_script,
+                        load_module = hxd_load,
+                    })
+                    cheat_client.gacha_bot:BuildUI(Tabs.Botting)
+                else
+                    library:Notify("Gacha Bot failed to load: " .. tostring(gacha_module), 6)
+                end
+            end)
+
             local group_trinket_bot = Tabs.Botting:AddLeftGroupbox("Trinket Bot")
 
             group_trinket_bot:AddInput("PointWaitTime", {
@@ -18690,6 +20753,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         pcall(function()
                             if plr.PlayerGui.StartMenu:FindFirstChild("Choices") and
                                plr.PlayerGui.StartMenu.Choices:FindFirstChild("Play") then
+                                pcall(replicatesignal, plr.PlayerGui.StartMenu.Choices.Play.MouseButton1Click)
                                 firesignal(plr.PlayerGui.StartMenu.Choices.Play.MouseButton1Click)
                             end
                         end)
@@ -22952,7 +25016,23 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 shared.SaveManager:SetFolder(config_folder)
                 shared.ThemeManager:SetFolder("HYDROXIDE")
 
-                shared.SaveManager:SetIgnoreIndexes({ "SavedPaths" })
+                shared.SaveManager:SetIgnoreIndexes({
+                    "SavedPaths",
+                    "GachaBot",
+                    "GachaProximity",
+                    "GachaHopIfCamped",
+                    "GachaCamperMinutes",
+                    "GachaHopIfMod",
+                    "GachaKickLowSilver",
+                    "GachaSafeServer",
+                    "GachaStopRolls",
+                    "GachaUseChair",
+                    "GachaChair",
+                    "GachaGeneralWebhook",
+                    "GachaScrollWebhook",
+                    "GachaWhitelistName",
+                    "GachaWhitelist",
+                })
 
                 shared.SaveManager.OnConfigLoaded = function(configName)
                     if cheat_client.config.persistent_configs and mem and configName then
@@ -26559,147 +28639,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         end
 
         do
-            local function readCSG(union)
-                local result = gethiddenproperty(union, "PhysicalConfigData")
-                local unionData
-                
-                if type(result) == "table" and #result >= 2 then
-                    unionData = result[2]
-                else
-                    unionData = select(2, pcall(function() return gethiddenproperty(union, "PhysicalConfigData") end))
-                    
-                    if type(unionData) ~= "string" then
-                        warn("DEBUG - PhysicalConfigData type:", type(result))
-                        
-                        for _, prop in pairs({"BinaryData", "MeshData", "RawData", "ConfigData"}) do
-                            local success, data = pcall(function() return gethiddenproperty(union, prop) end)
-                            if success and type(data) == "string" and #data > 100 then
-                                warn("Found usable data in property:", prop)
-                                unionData = data
-                                break
-                            end
-                        end
-                        
-                        if type(unionData) ~= "string" then
-                            warn("WARNING: Could not get valid CSG data. Captcha bypass may fail.")
-                            return {}
-                        end
-                    end
-                end
-                
-                local unionDataStream = tostring(unionData)
-                if type(unionDataStream) ~= "string" then
-                    warn("ERROR: Failed to convert union data to string")
-                    return {}
-                end
-
-                local function readByte(n)
-                    if #unionDataStream < n then
-                        return ""
-                    end
-                    local returnData = unionDataStream:sub(1, n)
-                    unionDataStream = unionDataStream:sub(n+1, #unionDataStream)
-                    return returnData
-                end;
-
-                readByte(51);
-
-                local points = {};
-
-                while #unionDataStream > 0 do
-                    readByte(20)
-                    readByte(20)
-
-                    local vertSize = string.unpack('ii', readByte(8));
-
-                    for i = 1, (vertSize/3) do
-                        local x, y, z = string.unpack('fff', readByte(12))
-                        points[#points + 1] = union.CFrame:ToWorldSpace(CFrame.new(x, y, z)).Position;
-                    end;
-
-                    local faceSize = string.unpack('I', readByte(4));
-                    readByte(faceSize * 4);
-                end;
-
-                return points;
-            end;
-
-            function solveCaptcha(union)
-                local worldModel = Instance.new('WorldModel');
-                worldModel.Parent = cg;
-
-                local newUnion = union:Clone()
-                newUnion.Parent = worldModel;
-
-                local cameraCFrame = gethiddenproperty(union.Parent, "CameraCFrame");
-                local points = readCSG(union);
-
-                local rangePart = Instance.new('Part');
-                rangePart.Parent = worldModel;
-                rangePart.CFrame = cameraCFrame:ToWorldSpace(CFrame.new(-8, 0, 0))
-                rangePart.Size = Vector3.new(1, 100, 100);
-
-                local model = Instance.new('Model', worldModel);
-                local baseModel = Instance.new('Model', worldModel);
-
-                baseModel.Name = 'Base';
-                model.Name = 'Final';
-
-                for i, v in next, points do
-                    local part = Instance.new('Part', baseModel);
-                    part.CFrame = CFrame.new(v);
-                    part.Size = Vector3.new(0.1, 0.1, 0.1);
-                end;
-
-                local seen = false;
-                for i = 0, 100 do
-                    rangePart.CFrame = rangePart.CFrame * CFrame.new(1, 0, 0)
-
-                    local overlapParams = OverlapParams.new();
-                    overlapParams.FilterType = Enum.RaycastFilterType.Whitelist;
-                    overlapParams.FilterDescendantsInstances = {baseModel};
-
-                    local bob = worldModel:GetPartsInPart(rangePart, overlapParams);
-                    if(seen and #bob <= 0) then break end;
-
-                    for i, v in next, bob do
-                        seen = true;
-
-                        local new = v:Clone();
-
-                        new.Parent = model;
-                        new.CFrame = CFrame.new(new.Position);
-                    end;
-                end;
-
-                for i, v in next, model:GetChildren() do
-                    v.CFrame = v.CFrame * CFrame.Angles(0, math.rad(union.Orientation.Y), 0);
-                end;
-
-                local shorter, found = math.huge, '';
-                local result = model:GetExtentsSize();
-
-                local values = {
-                    ['Arocknid'] = Vector3.new(11.963972091675, 6.2284870147705, 12.341609954834),
-                    ['Howler'] = Vector3.new(2.904595375061, 7.5143890380859, 6.4855442047119),
-                    ['Evil Eye'] = Vector3.new(6.7253036499023, 6.2872190475464, 11.757738113403),
-                    ['Zombie Scroom'] = Vector3.new(4.71413230896, 4.400146484375, 4.7931442260742),
-                    ['Golem'] = Vector3.new(17.123439788818, 21.224365234375, 6.9429664611816),
-                };
-
-                for i, v in next, values do
-                    if((result - v).Magnitude < shorter) then
-                        found = i;
-                        shorter = (result - v).Magnitude;
-                    end;
-                end;
-
-                worldModel:Destroy();
-                worldModel = nil;
-
-                return found;
-            end
-
             local time_elapsed = 0
             local playerDays = 0
 
@@ -26719,111 +28658,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 rps.Requests.ReturnToMenu:InvokeServer()
                 plr:Kick(message)
                 utility:Unload()
-            end
-
-            local function Get(value)
-                local success, result = pcall(function()
-                    return rps.Requests.Get:InvokeServer(utf8.char(65532) .. "\240\159\152\131", value)[value]
-                end)
-                return success and result or nil
-            end
-
-            local function check_silver()
-                local silver = Get("Silver")
-
-                if not silver then
-                    return true
-                end
-
-                local has_enough = silver >= 250
-                if not has_enough and no_kick() then
-                    utility:plain_webhook(string.format("@here %s (%s) tried gacha without enough silver (250 needed, has %d)", plr.Name, plr.UserId, silver))
-                    return true
-                end
-
-                return has_enough
-            end
-
-            local function gacha()
-                if not (Toggles and Toggles.day_farm and Toggles.day_farm.Value) and plr.Name ~= "Tharxifen" then return false end
-                if not plr.Character then return end
-
-                local npc = FindFirstChild(workspace.NPCs, "Xenyari")
-                local npcHead = FindFirstChild(npc, "Head")
-                local clickDetector = FindFirstChildWhichIsA(npc, "ClickDetector")
-                
-                if not workspace.NPCs or not FindFirstChild(workspace.NPCs, "Xenyari") or 
-                not FindFirstChild(workspace.NPCs.Xenyari, "Head") or
-                not FindFirstChildWhichIsA(workspace.NPCs.Xenyari, "ClickDetector") then
-                    return false
-                end
-
-                local distanceFromNPC = plr:DistanceFromCharacter(npcHead.Position)
-                if distanceFromNPC > 20 then
-                    return false
-                end
-
-                if not check_silver() then
-                    kickPlayer(string.format("%s (%s) tried gacha without enough silver (250 needed)", plr.Name, plr.UserId))
-                    return false
-                end
-                
-                if not playerDays then
-                    playerDays = utility:getPlayerDays() or 0
-                    if not playerDays then
-                        repeat
-                            playerDays = utility:getPlayerDays()
-                            task.wait(0.1)
-                        until playerDays
-                    end
-                end
-                
-                if dialogue_remote then
-                    local dialogConnection
-                    dialogConnection = utility:Connection(dialogue_remote.OnClientEvent, function(dialogData)
-                        task.wait(1)
-                        
-                        if not dialogData.choices then
-                            dialogue_remote:FireServer({exit = true})
-                            task.wait(1)
-                            dialogConnection:Disconnect()
-                        else
-                            dialogue_remote:FireServer({choice = dialogData.choices[1]})
-                        end
-                    end)
-                end
-
-                repeat
-                    fireclickdetector(clickDetector)
-                task.wait(0.25);
-                until FindFirstChild(plr.PlayerGui, 'CaptchaLoad') or FindFirstChild(plr.PlayerGui, 'Captcha');
-                
-                repeat task.wait(0.05) until FindFirstChild(plr.PlayerGui, 'Captcha');
-                repeat
-                    local captchaGUI = FindFirstChild(plr.PlayerGui, 'Captcha');
-                    local choices = captchaGUI and captchaGUI.MainFrame.Options:GetChildren();
-                    local union = captchaGUI and captchaGUI.MainFrame.Viewport.Union;
-
-                    utility:random_wait(true);
-
-                    if(choices and union) then
-                        local captchaAnswer = solveCaptcha(union);
-
-                        for i, v in next, choices do
-                            if(v.Name == captchaAnswer) then
-                                local objVector = v.AbsolutePosition;
-                                vim:SendMouseButtonEvent(objVector.X + 65, objVector.Y + 65, 0, true, game, 0);
-                                utility:random_wait(true);
-                                vim:SendMouseButtonEvent(objVector.X + 65, objVector.Y + 65, 0, false, game, 0);
-                                break
-                            end
-                        end
-                    end
-
-                    task.wait(1);
-                until not FindFirstChild(plr.PlayerGui, 'Captcha');
-                
-                return true
             end
 
             local function day_goal()
@@ -26854,11 +28688,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return
                 end
                 
-                if gacha() then
-                    warn("Successfully interacted with Xenyari!")
-                else
-                    warn("Not near Xenyari, continuing with normal day farm")
-                end
             end)
         end
     
