@@ -1183,6 +1183,16 @@ function GachaBot:hasForceField(character)
     return character and character:FindFirstChildOfClass("ForceField") ~= nil
 end
 
+function GachaBot:getBackpackSignature(backpack)
+    if not backpack then return nil end
+    local items = {}
+    for _, item in ipairs(backpack:GetChildren()) do
+        items[#items + 1] = item.ClassName .. "\0" .. item.Name
+    end
+    table.sort(items)
+    return table.concat(items, "\1")
+end
+
 function GachaBot:hasStartMenu()
     local gui = self.player:FindFirstChildOfClass("PlayerGui")
     return gui and gui:FindFirstChild("StartMenu") ~= nil
@@ -1275,13 +1285,70 @@ function GachaBot:menuUntilSuccess(token, emergency)
     local requests = self.ctx.replicated_storage:FindFirstChild("Requests")
     local fake = requests and requests:FindFirstChild("JoinPublicServer")
     local nextFake = 0
+    local forceFieldReadyAt = nil
+    local backpackSignature = nil
+    local backpackStableAt = nil
+    local inventoryReady = not emergency
     while self:isCurrent(token) and self.player.Character and not self:hasStartMenu() do
-        if emergency then
-            if not self:hasForceField(self.player.Character) and os.clock() >= nextFake then
+        if emergency and not inventoryReady then
+            local now = os.clock()
+            local character = self.player.Character
+            if not self:hasForceField(character) then
+                forceFieldReadyAt = nil
+                backpackSignature = nil
+                backpackStableAt = nil
+                self:setState("FF EMERGENCY", "creating ForceField")
+                if now >= nextFake then
+                    nextFake = now + 0.5
+                    self:keepTeleportErrorsDismissed(3)
+                    if fake then pcall(fake.FireServer, fake, "hey") end
+                end
+                task.wait(0.1)
+                continue
+            end
+
+            forceFieldReadyAt = forceFieldReadyAt or now
+            local backpack = self.player:FindFirstChildOfClass("Backpack")
+            local signature = self:getBackpackSignature(backpack)
+            if signature == nil then
+                backpackSignature = nil
+                backpackStableAt = nil
+                self:setState("FF EMERGENCY", "waiting for Backpack")
+                task.wait(0.1)
+                continue
+            end
+
+            if signature ~= backpackSignature then
+                backpackSignature = signature
+                backpackStableAt = now
+            else
+                backpackStableAt = backpackStableAt or now
+            end
+
+            local forceFieldAge = now - forceFieldReadyAt
+            local stableAge = now - backpackStableAt
+            if forceFieldAge < 5 or stableAge < 2 then
+                self:setState("FF EMERGENCY", "waiting for inventory")
+                task.wait(0.1)
+                continue
+            end
+
+            inventoryReady = true
+            self:setState("MENU", "inventory ready")
+        end
+
+        if emergency and not self:hasForceField(self.player.Character) then
+            inventoryReady = false
+            forceFieldReadyAt = nil
+            backpackSignature = nil
+            backpackStableAt = nil
+            if os.clock() >= nextFake then
                 nextFake = os.clock() + 0.5
                 self:keepTeleportErrorsDismissed(3)
                 if fake then pcall(fake.FireServer, fake, "hey") end
             end
+            task.wait(0.1)
+            continue
         end
         self:returnToMenuOnce()
         task.wait(emergency and 0.2 or 0.45)
