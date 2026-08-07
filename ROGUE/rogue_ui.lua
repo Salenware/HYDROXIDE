@@ -679,6 +679,7 @@ function GachaBot.new(context)
     self.state = "OFF"
     self.action = nil
     self.spawnedAt = 0
+    self.spawnCharacter = nil
     self.tooFarSince = nil
     self.pendingMenuAt = nil
     self.pendingHopReason = nil
@@ -691,6 +692,10 @@ function GachaBot.new(context)
     self.rollProgress = {}
     self.whitelist = {}
     self.connections = {}
+    self.teleportErrorDismissUntil = 0
+    self.teleportErrorDismissing = false
+    self.teleportQueueConnection = nil
+    self.reexecuteQueued = false
     self.currentDay = nil
     local userId = tostring(self.player.UserId)
     self.runtimePath = "HYDROXIDE/gacha_session_" .. userId .. ".json"
@@ -747,7 +752,7 @@ function GachaBot:saveProfile()
         self.profile.proximity = tonumber(self:getOption("GachaProximity", self.profile.proximity or 100)) or 100
         self.profile.general_webhook = tostring(self:getOption("GachaGeneralWebhook", self.profile.general_webhook or ""))
         self.profile.scroll_webhook = tostring(self:getOption("GachaScrollWebhook", self.profile.scroll_webhook or ""))
-        self.profile.chair = tostring(self:getOption("GachaChair", self.profile.chair or "None"))
+        self.profile.chair = nil
     end
     local names = {}
     for username in pairs(self.whitelist) do names[#names + 1] = username end
@@ -797,19 +802,22 @@ function GachaBot:loadRuntime()
     self.currentDay = tonumber(saved.current_day)
     self.terminalMenu = saved.terminal_menu == true
     self.sessionSettings = type(saved.settings) == "table" and saved.settings or {}
+    self.sessionChair = tostring(self.sessionSettings.chair or "None")
+    self.sessionSettings.stop_rolls = self:normalizeStopRolls(self.sessionSettings.stop_rolls)
     if type(saved.roll_progress) == "table" then
         self.rollProgress = saved.roll_progress
     end
 end
 
 function GachaBot:saveRuntime()
+    self.sessionSettings = self:captureSessionSettings()
     self:writeJson(self.runtimePath, {
         last_gacha_day = self.lastGachaDay,
         current_day = self:getDays() or self.currentDay,
         roll_progress = self.rollProgress,
         terminal_menu = self.terminalMenu == true,
         state = self.state,
-        settings = self:captureSessionSettings(),
+        settings = self.sessionSettings,
         saved_at = os.time(),
     })
 end
@@ -822,14 +830,29 @@ end
 function GachaBot:captureSessionSettings()
     if not self.options or not self.toggles then return self.sessionSettings or {} end
     return {
+        proximity_check = self:getToggle("GachaProximityCheck", true),
         hop_if_camped = self:getToggle("GachaHopIfCamped", true),
         camper_minutes = tostring(self:getOption("GachaCamperMinutes", "3")),
         hop_if_mod = self:getToggle("GachaHopIfMod", true),
         kick_low_silver = self:getToggle("GachaKickLowSilver", true),
         safe_server_mode = self:getToggle("GachaSafeServer", false),
         use_chair = self:getToggle("GachaUseChair", false),
-        stop_rolls = self:getOption("GachaStopRolls", {}),
+        chair = tostring(self.sessionChair or self.chairSelection or self:getOption("GachaChair", "None")),
+        stop_rolls = self:normalizeStopRolls(self:getOption("GachaStopRolls", {})),
     }
+end
+
+function GachaBot:normalizeStopRolls(value)
+    local result, seen = {}, {}
+    for key, entry in pairs(type(value) == "table" and value or {}) do
+        local name = type(key) == "number" and entry or (entry == true and key or nil)
+        if type(name) == "string" and table.find(STOP_ROLLS, name) and not seen[name] then
+            seen[name] = true
+            result[#result + 1] = name
+        end
+    end
+    table.sort(result)
+    return result
 end
 
 function GachaBot:setState(state, detail)
@@ -871,6 +894,10 @@ function GachaBot:isSafeServerMode()
     return self:getToggle("GachaSafeServer", false)
 end
 
+function GachaBot:isProximityCheckEnabled()
+    return not self:isSafeServerMode() and self:getToggle("GachaProximityCheck", true)
+end
+
 function GachaBot:getToolType(tool)
     if not tool or not tool:IsA("Tool") then return nil end
     local toolType = tool:GetAttribute("ToolType")
@@ -904,10 +931,12 @@ end
 function GachaBot:refreshChairChoices()
     local dropdown = self.options and self.options.GachaChair
     if not dropdown then return end
+    local selected = tostring(self.sessionChair or self.chairSelection or "None")
     local names, seen = self:getChairTools()
+    self.refreshingChairChoices = true
     dropdown:SetValues(names)
-    local selected = tostring(dropdown.Value or "None")
-    if not seen[selected] then dropdown:SetValue("None") end
+    dropdown:SetValue(seen[selected] and selected or "None")
+    self.refreshingChairChoices = false
 end
 
 function GachaBot:findTool(name)
@@ -930,7 +959,7 @@ end
 
 function GachaBot:ensureChair(token)
     if not self:getToggle("GachaUseChair", false) or self:isSeatedInChair() then return true end
-    local name = tostring(self:getOption("GachaChair", "None"))
+    local name = tostring(self.sessionChair or self.chairSelection or self:getOption("GachaChair", "None"))
     local tool = self:findTool(name)
     if not tool or lower(self:getToolType(tool)) ~= "chair" then
         self:refreshChairChoices()
@@ -1090,17 +1119,13 @@ function GachaBot:getBaseWebhookFields()
 end
 
 function GachaBot:getSessionSummary()
-    local selected = self:getOption("GachaStopRolls", {})
-    local stopRolls = {}
-    for name, enabled in pairs(selected or {}) do
-        if enabled then stopRolls[#stopRolls + 1] = name end
-    end
-    table.sort(stopRolls)
+    local stopRolls = self:normalizeStopRolls(self:getOption("GachaStopRolls", {}))
     local chair = self:getToggle("GachaUseChair", false)
-        and tostring(self:getOption("GachaChair", "None"))
+        and tostring(self.sessionChair or self.chairSelection or self:getOption("GachaChair", "None"))
         or "Disabled"
     return table.concat({
         "Detection range: " .. tostring(self:getOption("GachaProximity", 100)) .. " studs",
+        "Proximity check: " .. tostring(self:getToggle("GachaProximityCheck", true)),
         "Hop if camped: " .. tostring(self:getToggle("GachaHopIfCamped", true)),
         "Camper timeout: " .. tostring(self:getOption("GachaCamperMinutes", "3")) .. " minute(s)",
         "Hop if mod joins: " .. tostring(self:getToggle("GachaHopIfMod", true)),
@@ -1163,27 +1188,79 @@ function GachaBot:hasStartMenu()
     return gui and gui:FindFirstChild("StartMenu") ~= nil
 end
 
-function GachaBot:suppressTeleportErrors()
+function GachaBot:dismissTeleportErrors()
     local core = self.ctx.core_gui
     if not core then return end
+
+    local function promptText(value)
+        return lower(tostring(value)):gsub("%s+", " "):match("^%s*(.-)%s*$")
+    end
+
+    local title = nil
+    local message = nil
     for _, item in ipairs(core:GetDescendants()) do
         if item:IsA("TextLabel") or item:IsA("TextButton") then
-            local text = lower(item.Text)
-            if text:find("teleport", 1, true) and (
-                text:find("doesn't exist", 1, true)
-                or text:find("does not exist", 1, true)
-                or text:find("failed", 1, true)
-                or text:find("unable", 1, true)
-            ) then
-                local node = item
-                for _ = 1, 5 do
-                    node = node.Parent
-                    if not node then break end
-                    if node:IsA("GuiObject") then node.Visible = false end
-                end
+            local text = promptText(item.Text)
+            if text == "teleport failed" then title = item end
+            if text == "teleport failed due to an unexpected error. please try teleporting again. (error code: 769)" then
+                message = item
             end
         end
     end
+
+    if not title or not message then return end
+
+    local prompt = message.Parent
+    local button = nil
+    while prompt and prompt ~= core do
+        for _, item in ipairs(prompt:GetDescendants()) do
+            if item:IsA("TextButton") and promptText(item.Text) == "ok" then
+                button = item
+                break
+            end
+        end
+        if button then break end
+        prompt = prompt.Parent
+    end
+
+    local node = message
+    while node and node ~= core do
+        if node:IsA("GuiObject") then node.Visible = true end
+        node = node.Parent
+    end
+
+    if button then
+        local fired = false
+        if type(firesignal) == "function" then
+            fired = pcall(firesignal, button.MouseButton1Click)
+        end
+        if not fired then
+            pcall(function()
+                local position = button.AbsolutePosition + button.AbsoluteSize / 2
+                self.ctx.virtual_input:SendMouseButtonEvent(position.X, position.Y, 0, true, game, 0)
+                task.wait()
+                self.ctx.virtual_input:SendMouseButtonEvent(position.X, position.Y, 0, false, game, 0)
+            end)
+        end
+    end
+
+    pcall(function()
+        game:GetService("GuiService"):ClearError()
+    end)
+end
+
+function GachaBot:keepTeleportErrorsDismissed(seconds)
+    self.teleportErrorDismissUntil = math.max(self.teleportErrorDismissUntil or 0, os.clock() + (seconds or 3))
+    if self.teleportErrorDismissing then return end
+    self.teleportErrorDismissing = true
+    task.spawn(function()
+        while os.clock() < (self.teleportErrorDismissUntil or 0) do
+            self:dismissTeleportErrors()
+            task.wait(0.1)
+        end
+        self:dismissTeleportErrors()
+        self.teleportErrorDismissing = false
+    end)
 end
 
 function GachaBot:returnToMenuOnce()
@@ -1200,9 +1277,9 @@ function GachaBot:menuUntilSuccess(token, emergency)
     local nextFake = 0
     while self:isCurrent(token) and self.player.Character and not self:hasStartMenu() do
         if emergency then
-            self:suppressTeleportErrors()
             if not self:hasForceField(self.player.Character) and os.clock() >= nextFake then
                 nextFake = os.clock() + 0.5
+                self:keepTeleportErrorsDismissed(3)
                 if fake then pcall(fake.FireServer, fake, "hey") end
             end
         end
@@ -1211,21 +1288,51 @@ function GachaBot:menuUntilSuccess(token, emergency)
     end
     self.action = nil
     self.spawnedAt = 0
+    self.spawnCharacter = nil
+    self.tooFarSince = nil
     self.pendingMenuAt = nil
+    self.pendingHopReason = nil
     return self:isCurrent(token)
 end
 
 function GachaBot:ensureTeleportQueue()
-    if shared.on_teleport_setup then return end
-    shared.on_teleport_setup = true
-    shared.on_teleport_connection = self.player.OnTeleport:Connect(function()
-        if shared.gacha_teleport_queued then return end
-        shared.gacha_teleport_queued = true
-        local queue = queueteleport or queue_on_teleport
-        if queue then
-            pcall(queue, self.ctx.reexecute_script())
+    if self.teleportQueueConnection and self.teleportQueueConnection.Connected then return true end
+
+    local queue = queueteleport or queue_on_teleport
+    if type(queue) ~= "function" then
+        self:notify("Teleport queue unavailable - Gacha Bot cannot auto-resume", 6)
+        return false
+    end
+
+    local function queueLoader()
+        if self.reexecuteQueued then return true end
+        local built, loader = pcall(self.ctx.reexecute_script)
+        if not built then
+            self:notify("Failed to build Gacha Bot re-execute loader: " .. tostring(loader), 6)
+            return false
         end
+        if type(loader) ~= "string" or loader == "" then
+            self:notify("Gacha Bot re-execute loader is empty", 6)
+            return false
+        end
+        local queued, queueError = pcall(queue, loader)
+        if queued then
+            self.reexecuteQueued = true
+            return true
+        end
+        self:notify("Failed to queue Gacha Bot re-execute: " .. tostring(queueError), 6)
+        return false
+    end
+
+    self.teleportQueueConnection = self.player.OnTeleport:Connect(function(state)
+        if state == Enum.TeleportState.Failed then
+            self.reexecuteQueued = false
+            return
+        end
+        queueLoader()
     end)
+    self.connections[#self.connections + 1] = self.teleportQueueConnection
+    return true
 end
 
 function GachaBot:getServerHistory()
@@ -1314,7 +1421,7 @@ function GachaBot:spawnFromMenu(token, head)
     local cleanSince = nil
     local nextPlayAttempt = 0
     while self:isCurrent(token) and (not self.player.Character or self:hasStartMenu()) do
-        if not self:isSafeServerMode() then
+        if self:isProximityCheckEnabled() then
             local moderator = self:scanModerator()
             if moderator then
                 if self:getToggle("GachaHopIfMod", true) then
@@ -1646,7 +1753,15 @@ function GachaBot:performGacha(token, npc, clickDetector)
         until observedRoll or os.clock() >= rollDeadline or not self:isCurrent(token)
     end
 
-    if activeRemote and not result then pcall(activeRemote.FireServer, activeRemote, {exit = true}) end
+    if activeRemote then
+        local exitDeadline = os.clock() + 1
+        repeat
+            pcall(activeRemote.FireServer, activeRemote, {exit = true})
+            task.wait(0.1)
+        until not self.player.Character
+            or not self.player.Character:FindFirstChild("InDialogue")
+            or os.clock() >= exitDeadline
+    end
     self:disconnectList(dialogueConnections)
     if childConnection then pcall(childConnection.Disconnect, childConnection) end
     if restoreAutoDialogue and autoDialogue then pcall(autoDialogue.SetValue, autoDialogue, true) end
@@ -1720,35 +1835,44 @@ function GachaBot:handleSpawned(token, npc, head, click)
     if not self:isSafeServerMode() and not self:hasForceField(character) then
         return self:menuUntilSuccess(token, true)
     end
-    if self.spawnedAt == 0 then
+    if self.spawnCharacter ~= character then
+        self.spawnCharacter = character
         self.spawnedAt = os.clock()
+        self.tooFarSince = nil
         self.lastSafetyAt = os.clock()
         self:refreshChairChoices()
     end
 
-    if not self:isSafeServerMode() then
+    if self:isProximityCheckEnabled() then
         local moderator = self:scanModerator()
         if moderator then
-            if self:getToggle("GachaHopIfMod", true) then
-                return self:serverhop(token, "Moderator detected: " .. moderator.Name)
-            end
-            return self:menuUntilSuccess(token, false)
-        end
-
-        local campers = self:scanCampers(head)
-        self:updateCamperClock(campers)
-        if #campers > 0 then
             if not self.pendingMenuAt then self.pendingMenuAt = os.clock() + math.random(1, 4) end
-            local minutes = math.max(0.1, tonumber(self:getOption("GachaCamperMinutes", "3")) or 3)
-            if self:getToggle("GachaHopIfCamped", true) and self.camperElapsed >= minutes * 60 then
-                self:notify("Camper detected - hopping server")
-                return self:serverhop(token, "Camper detected", campers)
+            if self:getToggle("GachaHopIfMod", true) then
+                self.pendingHopReason = "Moderator detected: " .. moderator.Name
+            else
+                self.pendingHopReason = nil
+            end
+        else
+            local campers = self:scanCampers(head)
+            self:updateCamperClock(campers)
+            if #campers > 0 then
+                if not self.pendingMenuAt then self.pendingMenuAt = os.clock() + math.random(1, 4) end
+                local minutes = math.max(0.1, tonumber(self:getOption("GachaCamperMinutes", "3")) or 3)
+                if self:getToggle("GachaHopIfCamped", true) and self.camperElapsed >= minutes * 60 then
+                    self:notify("Camper detected - hopping server")
+                    return self:serverhop(token, "Camper detected", campers)
+                end
             end
         end
+    else
+        self.pendingMenuAt = nil
+        self.camperElapsed = 0
     end
 
     local root = self:getCharacterRoot(self.player)
-    if root and (root.Position - head.Position).Magnitude > 15 then
+    if os.clock() - self.spawnedAt < 5 then
+        self.tooFarSince = nil
+    elseif root and (root.Position - head.Position).Magnitude > 15 then
         self.tooFarSince = self.tooFarSince or os.clock()
         if os.clock() - self.tooFarSince >= 6 then
             local message = string.format("@here %s Too far from Xenyari (maybe dead) - kicking", self.player.Name)
@@ -1766,6 +1890,10 @@ function GachaBot:handleSpawned(token, npc, head, click)
 
     if not self:isSafeServerMode() then
         if self.pendingMenuAt and os.clock() >= self.pendingMenuAt then
+            local hopReason = self.pendingHopReason
+            self.pendingMenuAt = nil
+            self.pendingHopReason = nil
+            if hopReason then return self:serverhop(token, hopReason) end
             return self:menuUntilSuccess(token, false)
         end
         if self.pendingMenuAt then
@@ -1829,14 +1957,20 @@ function GachaBot:Start(resume)
         return false
     end
     if not resume then
+        self.sessionChair = tostring(self:getOption("GachaChair", "None"))
+        self.chairSelection = self.sessionChair
         self.lastGachaDay = nil
         self.currentDay = nil
         self.rollProgress = {}
         self.sessionSettings = {}
         self.terminalMenu = false
+    else
+        self.sessionChair = tostring(self:sessionValue("chair", self.sessionChair or self.chairSelection or "None"))
+        self.chairSelection = self.sessionChair
     end
     self.running = true
     self.generation += 1
+    self:keepTeleportErrorsDismissed(1)
     self.forceAttempt = true
     self.camperElapsed = 0
     self.lastSafetyAt = os.clock()
@@ -1861,6 +1995,7 @@ function GachaBot:Stop(userInitiated)
     self:setState("OFF")
     self.mem:RemoveItem("gachabot_started")
     self:deleteRuntime()
+    self.sessionChair = nil
 end
 
 function GachaBot:Destroy()
@@ -1875,12 +2010,16 @@ function GachaBot:Destroy()
 end
 
 function GachaBot:bindPersistence()
-    local function saveSession()
-        if self.running or (self.mem:HasItem("gachabot_started") and self.mem:GetItem("gachabot_started") == "true") then
-            self:saveRuntime()
-        end
+    local function active()
+        return self.running or (self.mem:HasItem("gachabot_started") and self.mem:GetItem("gachabot_started") == "true")
     end
-    for _, name in ipairs({"GachaHopIfCamped", "GachaHopIfMod", "GachaKickLowSilver", "GachaSafeServer", "GachaUseChair"}) do
+    local function saveSession()
+        if active() then self:saveRuntime() end
+    end
+    local function saveGlobal()
+        if active() then self:saveProfile() end
+    end
+    for _, name in ipairs({"GachaProximityCheck", "GachaHopIfCamped", "GachaHopIfMod", "GachaKickLowSilver", "GachaSafeServer", "GachaUseChair"}) do
         local control = self.toggles[name]
         if control then control:OnChanged(saveSession) end
     end
@@ -1888,16 +2027,27 @@ function GachaBot:bindPersistence()
         local control = self.options[name]
         if control then control:OnChanged(saveSession) end
     end
+    local chair = self.options.GachaChair
+    if chair then
+        chair:OnChanged(function()
+            if self.refreshingChairChoices then return end
+            if self.sessionChair then
+                self:refreshChairChoices()
+                return
+            end
+            self.chairSelection = tostring(chair.Value or "None")
+        end)
+    end
+    for _, name in ipairs({"GachaProximity", "GachaGeneralWebhook", "GachaScrollWebhook"}) do
+        local control = self.options[name]
+        if control then control:OnChanged(saveGlobal) end
+    end
 end
 
 function GachaBot:whitelistValues()
-    local values = {"None"}
+    local values = {}
     for username in pairs(self.whitelist) do values[#values + 1] = username end
-    table.sort(values, function(a, b)
-        if a == "None" then return true end
-        if b == "None" then return false end
-        return a < b
-    end)
+    table.sort(values)
     return values
 end
 
@@ -1910,24 +2060,26 @@ function GachaBot:addWhitelistFromInput()
         self.options.GachaWhitelist:SetValue(name)
     end
     if self.options.GachaWhitelistName then self.options.GachaWhitelistName:SetValue("") end
+    self:saveProfile()
 end
 
 function GachaBot:removeSelectedWhitelist()
-    local name = lower(self:getOption("GachaWhitelist", "None"))
-    if name == "none" or name == "" then return end
+    local name = lower(trim(tostring(self:getOption("GachaWhitelist", "") or "")))
+    if name == "" then return end
     self.whitelist[name] = nil
     if self.options.GachaWhitelist then
         self.options.GachaWhitelist:SetValues(self:whitelistValues())
-        self.options.GachaWhitelist:SetValue("None")
+        self.options.GachaWhitelist:SetValue(nil)
     end
+    self:saveProfile()
 end
 
 function GachaBot:BuildUI(tab)
     local main = tab:AddLeftGroupbox("Gacha Bot")
     local settings = tab:AddRightGroupbox("Gacha Bot Settings")
-    local chairValues, availableChairs = self:getChairTools()
-    local chairDefault = tostring(self:profileValue("chair", "None"))
-    if not availableChairs[chairDefault] then chairDefault = "None" end
+    local chairDefault = tostring(self.sessionChair or "None")
+    local chairValues, chairSeen = self:getChairTools()
+    self.chairSelection = chairDefault
     self.statusLabel = main:AddLabel({Text = "OFF", DoesWrap = true})
     main:AddToggle("GachaBot", {
         Text = "Gacha Bot",
@@ -1942,6 +2094,11 @@ function GachaBot:BuildUI(tab)
                 self:Stop(true)
             end
         end,
+    })
+    main:AddToggle("GachaProximityCheck", {
+        Text = "Proximity Check",
+        Default = self:sessionValue("proximity_check", true),
+        Tooltip = "When disabled, ignores players and moderators but still maintains ForceField safety and automates gacha.",
     })
     main:AddSlider("GachaProximity", {
         Text = "Player Detection Range",
@@ -1985,7 +2142,7 @@ function GachaBot:BuildUI(tab)
     main:AddDropdown("GachaChair", {
         Text = "Chair",
         Values = chairValues,
-        Default = chairDefault,
+        Default = chairSeen[chairDefault] and chairDefault or "None",
         Multi = false,
         Searchable = false,
         AllowNull = false,
@@ -1997,7 +2154,7 @@ function GachaBot:BuildUI(tab)
     settings:AddDropdown("GachaStopRolls", {
         Text = "Stop on Scroll",
         Values = STOP_ROLLS,
-        Default = self:sessionValue("stop_rolls", {}),
+        Default = self:normalizeStopRolls(self:sessionValue("stop_rolls", {})),
         Multi = true,
         Searchable = false,
         AllowNull = true,
@@ -2041,16 +2198,16 @@ function GachaBot:BuildUI(tab)
         Text = "Whitelist Username",
         Default = "",
         Numeric = false,
-        Finished = true,
+        Finished = false,
         Placeholder = "username",
     })
     settings:AddDropdown("GachaWhitelist", {
         Text = "Saved Whitelist",
         Values = self:whitelistValues(),
-        Default = "None",
+        Default = nil,
         Multi = false,
-        Searchable = true,
-        AllowNull = false,
+        Searchable = false,
+        AllowNull = true,
     })
     settings:AddButton({
         Text = "Add Whitelist",
@@ -2061,6 +2218,17 @@ function GachaBot:BuildUI(tab)
     })
 
     self:bindPersistence()
+
+    local function refreshChairsAfterReplication()
+        task.spawn(function()
+            for _, delay in ipairs({0.25, 0.75, 1.5, 3}) do
+                task.wait(delay)
+                self:refreshChairChoices()
+            end
+        end)
+    end
+    self.connections[#self.connections + 1] = self.player.CharacterAdded:Connect(refreshChairsAfterReplication)
+    refreshChairsAfterReplication()
 
     task.delay(4, function()
         if self.mem:HasItem("gachabot_started") and self.mem:GetItem("gachabot_started") == "true" then
@@ -16843,40 +17011,19 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             local AAGUN_STOP_COUNT = 2
             local AAGUN_COUNT_KEY = "aagun_session_count"
-            trinket_bot.aagun_path_radius = 30
-
-            function trinket_bot.distance_to_path_segment(position, segment_start, segment_end)
-                local segment = segment_end - segment_start
-                local segment_length_squared = segment:Dot(segment)
-                if segment_length_squared <= 0 then
-                    return (position - segment_start).Magnitude
-                end
-
-                local alpha = math.clamp((position - segment_start):Dot(segment) / segment_length_squared, 0, 1)
-                local closest_position = segment_start + segment * alpha
-                return (position - closest_position).Magnitude
-            end
+            trinket_bot.aagun_path_radius = 400
 
             function trinket_bot.is_near_bot_path(position)
                 if typeof(position) ~= "Vector3" or #trinket_bot.path_points == 0 then
                     return false
                 end
 
-                local previous_position
                 for _, point in ipairs(trinket_bot.path_points) do
                     local point_position = point and point.position
-                    if typeof(point_position) == "Vector3" then
-                        if (position - point_position).Magnitude <= trinket_bot.aagun_path_radius then
-                            return true
-                        end
-
-                        if previous_position
-                            and trinket_bot.distance_to_path_segment(position, previous_position, point_position) <= trinket_bot.aagun_path_radius
-                        then
-                            return true
-                        end
-
-                        previous_position = point_position
+                    if typeof(point_position) == "Vector3"
+                        and (position - point_position).Magnitude <= trinket_bot.aagun_path_radius
+                    then
+                        return true
                     end
                 end
 
@@ -16905,13 +17052,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return count
             end
 
-            local function handle_no_ctag_bot_death(death_position)
+            local function handle_no_ctag_bot_death(death_position, head_destroyed)
                 if cheat_client.manual_reset_pending then
                     cheat_client.manual_reset_pending = nil
                     return false, nil, true, false
                 end
 
-                if not trinket_bot.is_near_bot_path(death_position) then
+                if not head_destroyed or not trinket_bot.is_near_bot_path(death_position) then
                     return false, nil, false, false
                 end
 
@@ -17300,7 +17447,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             if continue_for_phoenix then
                                 local stopped, count, manual_reset, is_aagun = false, nil, false, false
                                 if not died_with_danger then
-                                    stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position)
+                                    stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position, FindFirstChild(character, "Head") == nil)
                                 end
 
                                 if stopped then
@@ -17332,7 +17479,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     pcall(function() library:Notify("You died (stay in server - not kicking)") end)
                                     pcall(function() utility:plain_webhook("@here bot died (stay in server mode)") end)
                                 else
-                                    local stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position)
+                                    local stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position, FindFirstChild(character, "Head") == nil)
                                     if not stopped then
                                         if manual_reset then
                                             pcall(function() utility:plain_webhook("@here bot manually reset (stay in server mode)") end)
@@ -17352,7 +17499,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         task.wait(0.3)
                                         plr:Kick("bot died")
                                     else
-                                        local stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position)
+                                        local stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position, FindFirstChild(character, "Head") == nil)
                                         if stopped then
                                             return
                                         end
@@ -19895,10 +20042,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         library:Notify(string.format("Phoenix Flowers: %d/%d", trinket_bot.phoenix_flower_count, trinket_bot.phoenix_flower_target))
 
                         if trinket_bot.phoenix_flower_count >= trinket_bot.phoenix_flower_target then
-                            trinket_bot.path_running = false
-                            mem:RemoveItem("botstarted")
-                            mem:RemoveItem("serverhop_count")
-                            release_disable_beds_for_bot()
                             local reached_message = string.format("%d Phoenix Flowers reached - kicking", trinket_bot.phoenix_flower_count)
                             library:Notify(reached_message)
                             pcall(function()
@@ -20788,7 +20931,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     if continue_for_phoenix then
                                         local stopped, count, manual_reset, is_aagun = false, nil, false, false
                                         if not died_with_danger then
-                                            stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position)
+                                            stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position, FindFirstChild(character, "Head") == nil)
                                         end
 
                                         if stopped then
@@ -20836,7 +20979,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         pcall(function() library:Notify("Died during auto-start (stay in server mode)") end)
                                         pcall(function() utility:plain_webhook("@here Bot died during auto-start (stay in server mode)") end)
                                     elseif not died_with_danger then
-                                        local stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position)
+                                        local stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position, FindFirstChild(character, "Head") == nil)
                                         if stopped then
                                             return
                                         end
@@ -25019,6 +25162,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 shared.SaveManager:SetIgnoreIndexes({
                     "SavedPaths",
                     "GachaBot",
+                    "GachaProximityCheck",
                     "GachaProximity",
                     "GachaHopIfCamped",
                     "GachaCamperMinutes",
