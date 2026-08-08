@@ -64,545 +64,7 @@ local HXD_DEFAULT_REMOTE_ROOT = "https://raw.githubusercontent.com/Salenware/HYD
 local HXD_DEFAULT_LOCAL_ROOT = "HYDROXIDE_REPO/"
 local hxd_env = getgenv()
 
-hxd_env.HXD_EMBEDDED_MODULES = hxd_env.HXD_EMBEDDED_MODULES or {}
--- HXD_EMBEDDED_MODULES_BEGIN
-hxd_env.HXD_EMBEDDED_MODULES["DEPENDENCIES/Captcha.lua"] = [========[
-local EncodingService = cloneref(game:GetService("EncodingService"))
-
-local CSGPHS8 = {}
-local newVector3 = Vector3.new
-local createTable = table.create
-local min = math.min
-local max = math.max
-
-local function u32(r)
-	local value = buffer.readu32(r.data, r.at)
-	r.at += 4
-	return value
-end
-
-local function f32(r)
-	local value = buffer.readf32(r.data, r.at)
-	r.at += 4
-	return value
-end
-
-local function vec3(r)
-	return newVector3(f32(r), f32(r), f32(r))
-end
-
-local function readRawHulls(r)
-	local faceRangeCount = u32(r)
-	local faceRanges = createTable(faceRangeCount)
-	for i = 1, faceRangeCount do
-		faceRanges[i] = u32(r)
-	end
-
-	local faceValueCount = faceRanges[#faceRanges] or 0
-	local faces = createTable(faceValueCount)
-	for i = 1, faceValueCount do
-		faces[i] = u32(r)
-	end
-
-	local posRangeCount = u32(r)
-	local posRanges = createTable(posRangeCount)
-	for i = 1, posRangeCount do
-		posRanges[i] = u32(r)
-	end
-
-	local positionValueCount = posRanges[#posRanges] or 0
-	local positions = createTable(positionValueCount)
-	for i = 1, positionValueCount do
-		positions[i] = f32(r)
-	end
-
-	return faceRanges, faces, posRanges, positions
-end
-
-local function bitReader(data, at, byteCount, bitCount)
-	local cache, cached = 0, 0
-	local finish = at + byteCount
-
-	return function(count)
-		local value = 0
-		while count > 0 do
-			if cached == 0 then
-				cache = buffer.readu32(data, at)
-				at += 4
-				cached = min(bitCount, 32)
-				bitCount -= cached
-			end
-
-			local take = min(count, cached)
-			cached -= take
-			value = value * 2 ^ take + bit32.extract(cache, cached, take)
-			count -= take
-		end
-		return value
-	end
-end
-
-local function decodeFaces(data, at, byteCount, bitCount, hullCount, faceCount)
-	local bits = bitReader(data, at, byteCount, bitCount)
-	local adjacency = createTable(faceCount * 3, -3)
-	local indices = createTable(faceCount * 3, 0)
-	local faceRanges, posRanges = { 0 }, { 0 }
-	local currentFace, vertexOffset = 0, 0
-
-	local function nextEdge(edge)
-		return math.floor(edge / 3) * 3 + (edge + 1) % 3
-	end
-
-	local function prevEdge(edge)
-		return math.floor(edge / 3) * 3 + (edge + 2) % 3
-	end
-
-	local function zipBoundary(current)
-		while adjacency[current + 1] == -2 do
-			local candidate = nextEdge(current)
-			while adjacency[candidate + 1] >= 0 do
-				candidate = nextEdge(adjacency[candidate + 1])
-			end
-			if adjacency[candidate + 1] ~= -1 then
-				break
-			end
-
-			adjacency[current + 1], adjacency[candidate + 1] = candidate, current
-			current = prevEdge(current)
-			local previous = current
-			local candidatePrevious = prevEdge(candidate)
-			indices[prevEdge(current) + 1] = indices[candidatePrevious + 1]
-
-			local connected = adjacency[current + 1]
-			while connected >= 0 and candidate ~= previous do
-				previous = prevEdge(connected)
-				indices[prevEdge(previous) + 1] = indices[candidatePrevious + 1]
-				connected = adjacency[previous + 1]
-			end
-			while adjacency[current + 1] >= 0 and current ~= candidate do
-				current = prevEdge(adjacency[current + 1])
-			end
-		end
-	end
-
-	for _ = 1, hullCount do
-		local firstEdge = currentFace * 3
-		adjacency[firstEdge + 1], adjacency[firstEdge + 2], adjacency[firstEdge + 3] = -1, -3, -1
-		indices[firstEdge + 1], indices[firstEdge + 2], indices[firstEdge + 3] = 0, 1, 2
-		currentFace += 1
-		local vertexCount = 3
-
-		local decode
-		function decode(cursor)
-			while true do
-				local edge0 = currentFace * 3
-				local edge1, edge2 = edge0 + 1, edge0 + 2
-				adjacency[edge0 + 1], adjacency[edge1 + 1], adjacency[edge2 + 1] = cursor, -3, -3
-				currentFace += 1
-				adjacency[cursor + 1] = edge0
-				indices[edge1 + 1] = indices[prevEdge(cursor) + 1]
-				indices[edge2 + 1] = indices[nextEdge(cursor) + 1]
-				cursor = edge1
-
-				local symbol
-				if bits(1) == 0 then
-					symbol = 0 -- Continue
-				else
-					symbol = bits(2) + 1 -- Split, Left, Right, End
-				end
-
-				if symbol == 0 then
-					indices[edge0 + 1] = vertexCount
-					adjacency[nextEdge(cursor) + 1] = -1
-					vertexCount += 1
-				elseif symbol == 1 then
-					decode(cursor)
-					cursor = nextEdge(cursor)
-				elseif symbol == 2 then
-					adjacency[cursor + 1] = -2
-					cursor = nextEdge(cursor)
-				elseif symbol == 3 then
-					local next = nextEdge(cursor)
-					adjacency[next + 1] = -2
-					zipBoundary(next)
-				else
-					adjacency[cursor + 1] = -2
-					local next = nextEdge(cursor)
-					adjacency[next + 1] = -2
-					zipBoundary(next)
-					return
-				end
-			end
-		end
-
-		decode(firstEdge + 1)
-		vertexOffset += vertexCount
-		faceRanges[#faceRanges + 1] = currentFace * 3
-		posRanges[#posRanges + 1] = vertexOffset * 3
-	end
-
-	return faceRanges, indices, posRanges
-end
-
-local function appendHulls(output, faceRanges, faces, posRanges, positions)
-	for hullIndex = 1, min(#faceRanges, #posRanges) - 1 do
-		local vertices = {}
-		local minX, minY, minZ = math.huge, math.huge, math.huge
-		local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
-
-		for i = posRanges[hullIndex] + 1, posRanges[hullIndex + 1], 3 do
-			local x, y, z = positions[i], positions[i + 1], positions[i + 2]
-			vertices[#vertices + 1] = newVector3(x, y, z)
-			minX, minY, minZ = min(minX, x), min(minY, y), min(minZ, z)
-			maxX, maxY, maxZ = max(maxX, x), max(maxY, y), max(maxZ, z)
-		end
-
-		local triangles = {}
-		for i = faceRanges[hullIndex] + 1, faceRanges[hullIndex + 1], 3 do
-			triangles[#triangles + 1] = { faces[i] + 1, faces[i + 1] + 1, faces[i + 2] + 1 }
-		end
-
-		output[#output + 1] = {
-			vertices = vertices,
-			triangles = triangles,
-			center = newVector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2),
-			size = newVector3(maxX - minX, maxY - minY, maxZ - minZ),
-			bounds = {
-				min = newVector3(minX, minY, minZ),
-				max = newVector3(maxX, maxY, maxZ),
-			},
-		}
-	end
-end
-
-local function distance2(a, b)
-	local x, y, z = a.X - b.X, a.Y - b.Y, a.Z - b.Z
-	return x * x + y * y + z * z
-end
-
-local function makeGroup(hulls, hullIndices)
-	local group = {
-		hulls = createTable(#hullIndices),
-		hullIndices = hullIndices,
-	}
-	local minX, minY, minZ = math.huge, math.huge, math.huge
-	local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
-
-	for _, hullIndex in hullIndices do
-		local hull = hulls[hullIndex]
-		group.hulls[#group.hulls + 1] = hull
-		minX = min(minX, hull.bounds.min.X)
-		minY = min(minY, hull.bounds.min.Y)
-		minZ = min(minZ, hull.bounds.min.Z)
-		maxX = max(maxX, hull.bounds.max.X)
-		maxY = max(maxY, hull.bounds.max.Y)
-		maxZ = max(maxZ, hull.bounds.max.Z)
-	end
-
-	group.bounds = {
-		min = newVector3(minX, minY, minZ),
-		max = newVector3(maxX, maxY, maxZ),
-	}
-	group.center = newVector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2)
-	group.size = newVector3(maxX - minX, maxY - minY, maxZ - minZ)
-	return group
-end
-
-local function buildConnectedGroups(hulls, epsilon)
-	local parents = createTable(#hulls)
-	for i = 1, #hulls do
-		parents[i] = i
-	end
-
-	local function find(index)
-		local root = index
-		while parents[root] ~= root do
-			root = parents[root]
-		end
-		while parents[index] ~= index do
-			local nextIndex = parents[index]
-			parents[index] = root
-			index = nextIndex
-		end
-		return root
-	end
-
-	local function overlaps(a, b)
-		return a.bounds.max.X >= b.bounds.min.X - epsilon
-			and b.bounds.max.X >= a.bounds.min.X - epsilon
-			and a.bounds.max.Y >= b.bounds.min.Y - epsilon
-			and b.bounds.max.Y >= a.bounds.min.Y - epsilon
-			and a.bounds.max.Z >= b.bounds.min.Z - epsilon
-			and b.bounds.max.Z >= a.bounds.min.Z - epsilon
-	end
-
-	for i = 1, #hulls - 1 do
-		for j = i + 1, #hulls do
-			if overlaps(hulls[i], hulls[j]) then
-				local rootI, rootJ = find(i), find(j)
-				if rootI ~= rootJ then
-					parents[rootJ] = rootI
-				end
-			end
-		end
-	end
-
-	local componentsByRoot = {}
-	local components = {}
-	for i = 1, #hulls do
-		local root = find(i)
-		local indices = componentsByRoot[root]
-		if not indices then
-			indices = {}
-			componentsByRoot[root] = indices
-			components[#components + 1] = indices
-		end
-		indices[#indices + 1] = i
-	end
-
-	local groups = createTable(#components)
-	for i, indices in components do
-		groups[i] = makeGroup(hulls, indices)
-	end
-	return groups
-end
-
-local function mergeExtraGroups(hulls, groups)
-	table.sort(groups, function(a, b)
-		return #a.hullIndices > #b.hullIndices
-	end)
-	local assignments = { {}, {} }
-	for _, hullIndex in groups[1].hullIndices do
-		assignments[1][#assignments[1] + 1] = hullIndex
-	end
-	for _, hullIndex in groups[2].hullIndices do
-		assignments[2][#assignments[2] + 1] = hullIndex
-	end
-
-	local centers = { groups[1].center, groups[2].center }
-	for i = 3, #groups do
-		local target = if distance2(groups[i].center, centers[1]) <= distance2(groups[i].center, centers[2])
-			then 1
-			else 2
-		for _, hullIndex in groups[i].hullIndices do
-			assignments[target][#assignments[target] + 1] = hullIndex
-		end
-	end
-	return {
-		makeGroup(hulls, assignments[1]),
-		makeGroup(hulls, assignments[2]),
-	}
-end
-
-local function kMeansFallback(hulls)
-	local farthestA, farthestB, farthestDistance = 1, 2, -1
-	for i = 1, #hulls - 1 do
-		for j = i + 1, #hulls do
-			local distance = distance2(hulls[i].center, hulls[j].center)
-			if distance > farthestDistance then
-				farthestA, farthestB, farthestDistance = i, j, distance
-			end
-		end
-	end
-
-	local centers = { hulls[farthestA].center, hulls[farthestB].center }
-	local assignments = createTable(#hulls, 0)
-	for _ = 1, 50 do
-		local changed = false
-		local sums = {
-			{ x = 0, y = 0, z = 0, count = 0 },
-			{ x = 0, y = 0, z = 0, count = 0 },
-		}
-		for i, hull in hulls do
-			local target = if distance2(hull.center, centers[1]) <= distance2(hull.center, centers[2]) then 1 else 2
-			if assignments[i] ~= target then
-				assignments[i], changed = target, true
-			end
-			local sum = sums[target]
-			sum.x += hull.center.X
-			sum.y += hull.center.Y
-			sum.z += hull.center.Z
-			sum.count += 1
-		end
-		for i, sum in sums do
-			if sum.count > 0 then
-				centers[i] = newVector3(sum.x / sum.count, sum.y / sum.count, sum.z / sum.count)
-			end
-		end
-		if not changed then
-			break
-		end
-	end
-
-	local indices = { {}, {} }
-	for i, target in assignments do
-		indices[target][#indices[target] + 1] = i
-	end
-	return {
-		makeGroup(hulls, indices[1]),
-		makeGroup(hulls, indices[2]),
-	}
-end
-
-function CSGPHS8.separateHulls(hulls)
-	for _, epsilon in { 0.001, 0.0001, 0 } do
-		local groups = buildConnectedGroups(hulls, epsilon)
-		if #groups == 2 then
-			return groups
-		elseif #groups > 2 then
-			return mergeExtraGroups(hulls, groups)
-		end
-	end
-
-	return kMeansFallback(hulls)
-end
-
-local MOB_SIGNATURES = {
-	{
-		answer = "Golem",
-		sizes = {
-			{ 6.943143, 17.124934, 21.22445 },
-			{ 10.667896, 18.130379, 21.711119 },
-			{ 15.624678, 21.078442, 28.866095 },
-			{ 11.168000, 16.632168, 22.295399 },
-		},
-	},
-	{
-		answer = "Arocknid",
-		sizes = {
-			{ 6.219869, 11.576576, 11.729338 },
-			{ 7.006574, 9.840628, 10.988729 },
-			{ 6.529219, 11.507332, 11.690758 },
-			{ 11.410288, 11.729338, 15.074484 },
-		},
-	},
-	{
-		answer = "Evil Eye",
-		sizes = {
-			{ 4.927636, 6.635971, 11.829517 },
-			{ 4.709663, 6.538452, 11.92519 },
-			{ 4.927637, 6.635971, 11.829517 },
-			{ 2.082426, 2.256552, 6.635970 },
-		},
-	},
-	{
-		answer = "Howler",
-		sizes = {
-			{ 3.138939, 6.833188, 6.838859 },
-			{ 4.069223, 6.587232, 6.974196 },
-		},
-	},
-	{
-		answer = "Zombie Scroom",
-		sizes = {
-			{ 4.99328, 5.078253, 5.08746 },
-			{ 4.82093, 4.855397, 4.899997 },
-			{ 4.400224, 4.714131, 4.793147 },
-		},
-	},
-}
-
-local function classifyGroup(group)
-	local dimensions = { group.size.X, group.size.Y, group.size.Z }
-	table.sort(dimensions)
-	local bestAnswer, bestScore = nil, math.huge
-
-	for _, mob in MOB_SIGNATURES do
-		for _, signature in mob.sizes do
-			local score = 0
-			for axis = 1, 3 do
-				local ratio = dimensions[axis] / signature[axis]
-				score += math.log(ratio) ^ 2
-			end
-			if score < bestScore then
-				bestAnswer, bestScore = mob.answer, score
-			end
-		end
-	end
-	return bestAnswer, bestScore
-end
-
-function CSGPHS8.solve(result, unionCFrame, cameraCFrame)
-	assert(#result.groups == 2, "need 2 mob groups, got " .. #result.groups)
-
-	local visibleGroup, visibleIndex, smallestRayError = nil, nil, math.huge
-	for index, group in result.groups do
-		local worldCenter = unionCFrame:PointToWorldSpace(group.center)
-		local offset = worldCenter - cameraCFrame.Position
-		local depth = offset:Dot(cameraCFrame.LookVector)
-		local rayError = math.huge
-		if depth > 0 then
-			local perpendicularSquared = max(offset:Dot(offset) - depth * depth, 0)
-			rayError = math.sqrt(perpendicularSquared) / depth
-		end
-		if rayError < smallestRayError then
-			visibleGroup, visibleIndex, smallestRayError = group, index, rayError
-		end
-	end
-
-	assert(visibleGroup, "no mob infront of the camera")
-	local answer, signatureScore = classifyGroup(visibleGroup)
-	return answer, visibleIndex, smallestRayError, signatureScore
-end
-
-function CSGPHS8.decodePayload(payload, geomType)
-	local r = { data = payload, at = 0 }
-	local hullCount, positionCount, faceCount = u32(r), u32(r), u32(r)
-	u32(r) -- first hull position count
-	u32(r) -- first hull face count
-	local rawLength = u32(r)
-	local clersBitCount, clersLength = u32(r), u32(r)
-	u32(r) -- positions byte length
-	local bounds = { min = vec3(r), max = vec3(r) }
-
-	local rawFaceRanges, rawFaces, rawPosRanges, rawPositions
-	if rawLength ~= 0 then
-		rawFaceRanges, rawFaces, rawPosRanges, rawPositions = readRawHulls(r)
-	end
-
-	local clersAt = r.at
-	r.at += clersLength
-	local positionValueCount = positionCount * 3
-	local positions = createTable(positionValueCount)
-	for i = 1, positionValueCount do
-		positions[i] = f32(r)
-	end
-
-	local faceRanges, faces, posRanges = decodeFaces(payload, clersAt, clersLength, clersBitCount, hullCount, faceCount)
-
-	local hulls = {}
-	if rawFaceRanges then
-		appendHulls(hulls, rawFaceRanges, rawFaces, rawPosRanges, rawPositions)
-	end
-	local rawHullCount = #hulls
-	appendHulls(hulls, faceRanges, faces, posRanges, positions)
-	local groups = CSGPHS8.separateHulls(hulls)
-
-	return {
-		version = 8,
-		geomType = geomType,
-		bounds = bounds,
-		rawHullCount = rawHullCount,
-		hulls = hulls,
-		groups = groups,
-		models = groups,
-	}
-end
-
-function CSGPHS8.decode(rawData: string)
-	local rawData: buffer = buffer.fromstring(rawData)
-
-	assert(buffer.readstring(rawData, 0, 10) == "CSGPHS\8\0\0\0", "only v8 implemented")
-
-	local compressed = buffer.create(buffer.len(rawData) - 12)
-	buffer.copy(compressed, 0, rawData, 12)
-	local payload = EncodingService:DecompressBuffer(compressed, Enum.CompressionAlgorithm.Zstd)
-	return CSGPHS8.decodePayload(payload, buffer.readu8(rawData, 10))
-end
-
-return CSGPHS8
-]========]
-hxd_env.HXD_EMBEDDED_MODULES["ROGUE/gacha_bot.lua"] = [========[
+local GachaBotModule = (function()
 local GachaBot = {}
 GachaBot.__index = GachaBot
 
@@ -696,6 +158,9 @@ function GachaBot.new(context)
     self.teleportErrorDismissing = false
     self.teleportQueueConnection = nil
     self.reexecuteQueued = false
+    self.menuInProgress = false
+    self.menuEmergencyRequested = false
+    self.lastRunErrorAt = 0
     self.currentDay = nil
     local userId = tostring(self.player.UserId)
     self.runtimePath = "HYDROXIDE/gacha_session_" .. userId .. ".json"
@@ -1233,16 +698,12 @@ function GachaBot:dismissTeleportErrors()
         prompt = prompt.Parent
     end
 
-    local node = message
-    while node and node ~= core do
-        if node:IsA("GuiObject") then node.Visible = true end
-        node = node.Parent
-    end
-
     if button then
         local fired = false
         if type(firesignal) == "function" then
-            fired = pcall(firesignal, button.MouseButton1Click)
+            local clickOk = pcall(firesignal, button.MouseButton1Click)
+            local activatedOk = pcall(firesignal, button.Activated)
+            fired = clickOk or activatedOk
         end
         if not fired then
             pcall(function()
@@ -1256,6 +717,18 @@ function GachaBot:dismissTeleportErrors()
 
     pcall(function()
         game:GetService("GuiService"):ClearError()
+    end)
+
+    pcall(function()
+        if prompt and prompt ~= core and prompt:IsA("GuiObject") then
+            local promptName = lower(prompt.Name)
+            local parentName = prompt.Parent and lower(prompt.Parent.Name) or ""
+            if promptName:find("error", 1, true)
+                or parentName:find("promptoverlay", 1, true)
+            then
+                prompt.Visible = false
+            end
+        end
     end)
 end
 
@@ -1280,86 +753,124 @@ function GachaBot:returnToMenuOnce()
 end
 
 function GachaBot:menuUntilSuccess(token, emergency)
-    self.action = "MENU"
-    self:setState(emergency and "FF EMERGENCY" or "MENU")
-    local requests = self.ctx.replicated_storage:FindFirstChild("Requests")
-    local fake = requests and requests:FindFirstChild("JoinPublicServer")
-    local nextFake = 0
-    local forceFieldReadyAt = nil
-    local backpackSignature = nil
-    local backpackStableAt = nil
-    local inventoryReady = not emergency
-    while self:isCurrent(token) and self.player.Character and not self:hasStartMenu() do
-        if emergency and not inventoryReady then
-            local now = os.clock()
-            local character = self.player.Character
-            if not self:hasForceField(character) then
+    if self.menuInProgress then
+        if emergency then self.menuEmergencyRequested = true end
+        while self:isCurrent(token)
+            and self.menuInProgress
+            and self.player.Character
+            and not self:hasStartMenu()
+        do
+            task.wait(0.05)
+        end
+        return self:isCurrent(token)
+    end
+
+    self.menuInProgress = true
+    self.menuEmergencyRequested = emergency == true
+    local ok, result = xpcall(function()
+        local emergencyMode = emergency == true
+        self.action = "MENU"
+        self:setState(emergencyMode and "FF EMERGENCY" or "MENU")
+        local requests = self.ctx.replicated_storage:FindFirstChild("Requests")
+        local fake = requests and requests:FindFirstChild("JoinPublicServer")
+        local nextFake = 0
+        local forceFieldReadyAt = nil
+        local backpackSignature = nil
+        local backpackStableAt = nil
+        local inventoryReady = not emergencyMode
+
+        while self:isCurrent(token) and self.player.Character and not self:hasStartMenu() do
+            if self.menuEmergencyRequested and not emergencyMode then
+                emergencyMode = true
+                inventoryReady = false
                 forceFieldReadyAt = nil
                 backpackSignature = nil
                 backpackStableAt = nil
-                self:setState("FF EMERGENCY", "creating ForceField")
-                if now >= nextFake then
-                    nextFake = now + 0.5
-                    self:keepTeleportErrorsDismissed(3)
+                self:setState("FF EMERGENCY")
+            end
+
+            if emergencyMode and not inventoryReady then
+                local now = os.clock()
+                local character = self.player.Character
+                if not self:hasForceField(character) then
+                    forceFieldReadyAt = nil
+                    backpackSignature = nil
+                    backpackStableAt = nil
+                    self:setState("FF EMERGENCY", "creating ForceField")
+                    if now >= nextFake then
+                        nextFake = now + 0.5
+                        self:keepTeleportErrorsDismissed(10)
+                        if fake then pcall(fake.FireServer, fake, "hey") end
+                    end
+                    task.wait(0.1)
+                    continue
+                end
+
+                forceFieldReadyAt = forceFieldReadyAt or now
+                local backpack = self.player:FindFirstChildOfClass("Backpack")
+                local signature = self:getBackpackSignature(backpack)
+                if signature == nil then
+                    backpackSignature = nil
+                    backpackStableAt = nil
+                    self:setState("FF EMERGENCY", "waiting for Backpack")
+                    task.wait(0.1)
+                    continue
+                end
+
+                if signature ~= backpackSignature then
+                    backpackSignature = signature
+                    backpackStableAt = now
+                else
+                    backpackStableAt = backpackStableAt or now
+                end
+
+                local forceFieldAge = now - forceFieldReadyAt
+                local stableAge = now - backpackStableAt
+                if forceFieldAge < 5 or stableAge < 2 then
+                    self:setState("FF EMERGENCY", "waiting for inventory")
+                    task.wait(0.1)
+                    continue
+                end
+
+                inventoryReady = true
+                self:setState("MENU", "inventory ready")
+            end
+
+            if emergencyMode and not self:hasForceField(self.player.Character) then
+                inventoryReady = false
+                forceFieldReadyAt = nil
+                backpackSignature = nil
+                backpackStableAt = nil
+                if os.clock() >= nextFake then
+                    nextFake = os.clock() + 0.5
+                    self:keepTeleportErrorsDismissed(10)
                     if fake then pcall(fake.FireServer, fake, "hey") end
                 end
                 task.wait(0.1)
                 continue
             end
-
-            forceFieldReadyAt = forceFieldReadyAt or now
-            local backpack = self.player:FindFirstChildOfClass("Backpack")
-            local signature = self:getBackpackSignature(backpack)
-            if signature == nil then
-                backpackSignature = nil
-                backpackStableAt = nil
-                self:setState("FF EMERGENCY", "waiting for Backpack")
-                task.wait(0.1)
-                continue
-            end
-
-            if signature ~= backpackSignature then
-                backpackSignature = signature
-                backpackStableAt = now
-            else
-                backpackStableAt = backpackStableAt or now
-            end
-
-            local forceFieldAge = now - forceFieldReadyAt
-            local stableAge = now - backpackStableAt
-            if forceFieldAge < 5 or stableAge < 2 then
-                self:setState("FF EMERGENCY", "waiting for inventory")
-                task.wait(0.1)
-                continue
-            end
-
-            inventoryReady = true
-            self:setState("MENU", "inventory ready")
+            self:returnToMenuOnce()
+            task.wait(emergencyMode and 0.2 or 0.45)
         end
+        return self:isCurrent(token)
+    end, function(err)
+        return tostring(err)
+    end)
 
-        if emergency and not self:hasForceField(self.player.Character) then
-            inventoryReady = false
-            forceFieldReadyAt = nil
-            backpackSignature = nil
-            backpackStableAt = nil
-            if os.clock() >= nextFake then
-                nextFake = os.clock() + 0.5
-                self:keepTeleportErrorsDismissed(3)
-                if fake then pcall(fake.FireServer, fake, "hey") end
-            end
-            task.wait(0.1)
-            continue
-        end
-        self:returnToMenuOnce()
-        task.wait(emergency and 0.2 or 0.45)
-    end
+    self.menuInProgress = false
+    self.menuEmergencyRequested = false
     self.action = nil
     self.spawnedAt = 0
     self.spawnCharacter = nil
     self.tooFarSince = nil
     self.pendingMenuAt = nil
     self.pendingHopReason = nil
-    return self:isCurrent(token)
+    if not ok then
+        self.lastMenuError = result
+        self:notify("Gacha Bot menu recovery failed - retrying", 4)
+        return false
+    end
+    return result
 end
 
 function GachaBot:ensureTeleportQueue()
@@ -2003,6 +1514,40 @@ function GachaBot:run(token)
     end
 end
 
+function GachaBot:forceFieldWatchdog(token)
+    while self:isCurrent(token) do
+        if not self:isSafeServerMode() then
+            local character = self.player.Character
+            if character and not self:hasStartMenu() and not self:hasForceField(character) then
+                self.menuEmergencyRequested = true
+                self:menuUntilSuccess(token, true)
+            end
+        end
+        task.wait(0.1)
+    end
+end
+
+function GachaBot:runGuarded(token)
+    while self:isCurrent(token) do
+        local ok, runError = xpcall(function()
+            self:run(token)
+        end, function(err)
+            return tostring(err)
+        end)
+        if not self:isCurrent(token) then return end
+        if not ok then
+            self.lastRunError = runError
+            local now = os.clock()
+            if now - self.lastRunErrorAt >= 5 then
+                self.lastRunErrorAt = now
+                self:notify("Gacha Bot loop recovered from an internal error", 4)
+            end
+            self:setState("RECOVERING")
+        end
+        task.wait(0.5)
+    end
+end
+
 function GachaBot:canStartExplicitly()
     local _, head = self:findXenyari()
     local root = self:getCharacterRoot(self.player)
@@ -2049,7 +1594,8 @@ function GachaBot:Start(resume)
         {name = "Settings", value = self:getSessionSummary(), inline = false},
     }, 5763719)
     local token = self.generation
-    task.spawn(function() self:run(token) end)
+    task.spawn(function() self:forceFieldWatchdog(token) end)
+    task.spawn(function() self:runGuarded(token) end)
     return true
 end
 
@@ -2315,8 +1861,7 @@ return {
         return GachaBot.new(context)
     end,
 }
-]========]
--- HXD_EMBEDDED_MODULES_END
+end)()
 
 hxd_env.HXD_REMOTE_ROOT = hxd_env.HXD_REMOTE_ROOT or HXD_DEFAULT_REMOTE_ROOT
 hxd_env.HXD_LOCAL_ROOT = hxd_env.HXD_LOCAL_ROOT or HXD_DEFAULT_LOCAL_ROOT
@@ -2357,16 +1902,6 @@ local function hxd_load_local(path)
 end
 
 local function hxd_load(path)
-    local embedded_modules = hxd_env.HXD_EMBEDDED_MODULES
-    local embedded_code = type(embedded_modules) == "table" and embedded_modules[path]
-    if type(embedded_code) == "string" then
-        local fn, err = loadstring(embedded_code)
-        if not fn then
-            error(err)
-        end
-        return fn()
-    end
-
     if hxd_env.HXD_LOAD_MODE == "local" and hxd_has_local(path) then
         return hxd_load_local(path)
     end
@@ -6008,14 +5543,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return
                 end
 
-                local reset_token = os.clock()
-                cheat_client.manual_reset_pending = reset_token
-                task.delay(15, function()
-                    if cheat_client.manual_reset_pending == reset_token then
-                        cheat_client.manual_reset_pending = nil
-                    end
-                end)
-            
                 Head:Destroy()
             end
         end
@@ -10561,7 +10088,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             local group_misc_esp = Tabs.Visuals:AddLeftGroupbox("World ESP")
             local group_ingredient_esp = Tabs.Visuals:AddRightGroupbox("Ingredient ESP")
-            local group_ore_esp = Tabs.Visuals:AddLeftGroupbox("Ore ESP")
 
             do
                 group_misc_esp:AddToggle("TrinketEsp", {
@@ -10748,90 +10274,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     Max = 2000,
                     Rounding = 1
                 })
-            end
-
-            do
-                if game.PlaceId ~= 14341521240 then
-                    group_ore_esp:AddToggle("ore_esp", {
-                    Text = "Ore ESP",
-                    Default = cheat_client.config.ore_esp,
-                    Callback = function(value)
-                        cheat_client.config.ore_esp = value
-
-                        if value then
-                            cheat_client.ore_esp_objects = cheat_client.ore_esp_objects or {}
-                            for _, object in pairs(ws.Ores:GetChildren()) do
-                                if not cheat_client.ore_esp_objects[object] then
-                                    cheat_client:add_ore_esp(object)
-                                end
-                            end
-
-                            cheat_client.esp_rendering.start_ore_esp()
-                        else
-                            cheat_client.esp_rendering.stop_ore_esp()
-
-                            for ore, esp in pairs(cheat_client.ore_esp_objects or {}) do
-                                if esp and esp.destruct then
-                                    esp:destruct()
-                                end
-                            end
-                            cheat_client.ore_esp_objects = {}
-                        end
-                    end
-                }):AddKeyPicker("OreEspKeybind", {
-                    Default = cheat_client.config.ore_esp_keybind,
-                    Text = "Ore ESP Toggle",
-                    Mode = "Toggle",
-                    SyncToggleState = true,
-                })
-
-                Options.OreEspKeybind:OnChanged(function()
-                    cheat_client.config.ore_esp_keybind = Options.OreEspKeybind.Value
-                end)
-
-                group_ore_esp:AddToggle("mythril_esp", {
-                    Text = "Mythril",
-                    Default = cheat_client.config.mythril_esp,
-                    Callback = function(value)
-                        cheat_client.config.mythril_esp = value
-                    end
-                })
-
-                group_ore_esp:AddToggle("copper_esp", {
-                    Text = "Copper",
-                    Default = cheat_client.config.copper_esp,
-                    Callback = function(value)
-                        cheat_client.config.copper_esp = value
-                    end
-                })
-
-                group_ore_esp:AddToggle("iron_esp", {
-                    Text = "Iron",
-                    Default = cheat_client.config.iron_esp,
-                    Callback = function(value)
-                        cheat_client.config.iron_esp = value
-                    end
-                })
-
-                group_ore_esp:AddToggle("tin_esp", {
-                    Text = "Tin",
-                    Default = cheat_client.config.tin_esp,
-                    Callback = function(value)
-                        cheat_client.config.tin_esp = value
-                    end
-                })
-
-                group_ore_esp:AddSlider("ore_range", {
-                    Text = "Range",
-                    Default = cheat_client.config.ore_range,
-                    Min = 0,
-                    Max = 12000,
-                    Rounding = 1,
-                    Callback = function(value)
-                        cheat_client.config.ore_range = value
-                    end
-                })
-                end
             end
 
         end
@@ -14619,157 +14061,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         end
 
         do
-            local group_ps = Tabs.Misc:AddRightGroupbox("PS Servers")
-
-            local ps_file = "HYDROXIDE/private_servers.json"
-            local http_service = Services.HttpService
-
-            local function load_servers()
-                if not isfile(ps_file) then
-                    return {"1967beef", "ffdc35ae", "555985b2"}
-                end
-                local success, result = pcall(function()
-                    return http_service:JSONDecode(readfile(ps_file))
-                end)
-                if success and type(result) == "table" then
-                    return result
-                end
-                return {"1967beef", "ffdc35ae", "555985b2"}
-            end
-
-            local function save_servers(servers)
-                local success = pcall(function()
-                    writefile(ps_file, http_service:JSONEncode(servers))
-                end)
-                return success
-            end
-
-            local server_ids = load_servers()
-
-            local function join_server(server_id)
-                if cs:HasTag(plr.Character, "Danger") and not (Toggles and Toggles.ignore_danger and Toggles.ignore_danger.Value) then
-                    repeat
-                        rs.Heartbeat:Wait()
-                    until not cs:HasTag(plr.Character, "Danger") or (Toggles and Toggles.ignore_danger and Toggles.ignore_danger.Value)
-                end
-                rps.Requests.JoinPrivateServer:FireServer(server_id)
-            end
-
-            local function refresh_dropdown()
-                server_ids = load_servers()
-                if Options.PrivateServerDropdown then
-                    Options.PrivateServerDropdown:SetValues(server_ids)
-                    if #server_ids > 0 then
-                        Options.PrivateServerDropdown:SetValue(server_ids[1])
-                    end
-                end
-            end
-
-            group_ps:AddDropdown("PrivateServerDropdown", {
-                Text = "Saved Servers",
-                Values = server_ids,
-                Default = #server_ids > 0 and server_ids[1] or nil,
-                Multi = false,
-                Callback = function(value) end
-            })
-
-            group_ps:AddButton({
-                Text = "Copy Code",
-                Func = function()
-                    local server_id = Options.PrivateServerDropdown.Value
-                    if server_id and server_id ~= "" then
-                        if setclipboard then
-                            setclipboard(server_id)
-                            library:Notify("Copied code: " .. server_id, 3)
-                        else
-                            library:Notify("setclipboard not available", 3)
-                        end
-                    else
-                        library:Notify("Please select a server", 3)
-                    end
-                end
-            })
-
-            group_ps:AddButton({
-                Text = "Join Selected Server",
-                DoubleClick = true,
-                Func = function()
-                    local server_id = Options.PrivateServerDropdown.Value
-                    if server_id and server_id ~= "" then
-                        join_server(server_id)
-                        library:Notify("Joining private server: " .. server_id, 3)
-                    else
-                        library:Notify("Please select a server", 3)
-                    end
-                end
-            })
-
-            group_ps:AddDivider()
-
-            group_ps:AddInput("CustomPrivateServer", {
-                Text = "Server Code",
-                Placeholder = "Enter server code...",
-                ClearTextOnFocus = false,
-            })
-
-            group_ps:AddButton({
-                Text = "Join Server Code",
-                DoubleClick = true,
-                Func = function()
-                    local server_id = Options.CustomPrivateServer.Value
-                    if server_id and server_id ~= "" then
-                        join_server(server_id)
-                        library:Notify("Joining private server: " .. server_id, 3)
-                    else
-                        library:Notify("Please enter a valid server ID", 3)
-                    end
-                end
-            })
-
-            group_ps:AddButton({
-                Text = "Add to Saved Servers",
-                Func = function()
-                    local server_id = Options.CustomPrivateServer.Value
-                    if server_id and server_id ~= "" then
-                        for _, id in ipairs(server_ids) do
-                            if id == server_id then
-                                library:Notify("Server already in list", 3)
-                                return
-                            end
-                        end
-                        table.insert(server_ids, server_id)
-                        save_servers(server_ids)
-                        refresh_dropdown()
-                        library:Notify("Added server: " .. server_id, 3)
-                    else
-                        library:Notify("Please enter a server ID", 3)
-                    end
-                end
-            })
-
-            group_ps:AddButton({
-                Text = "Delete Selected Server",
-                Func = function()
-                    local server_id = Options.PrivateServerDropdown.Value
-                    if server_id and server_id ~= "" then
-                        for i, id in ipairs(server_ids) do
-                            if id == server_id then
-                                table.remove(server_ids, i)
-                                save_servers(server_ids)
-                                refresh_dropdown()
-                                library:Notify("Deleted server: " .. server_id, 3)
-                                return
-                            end
-                        end
-                        library:Notify("Server not found in list", 3)
-                    else
-                        library:Notify("Please select a server", 3)
-                    end
-                end
-            })
-        end
-
-        do
             local trinket_bot = {
                 path_points = {},
                 point_visualizations = {},
@@ -17099,12 +16390,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             function trinket_bot.get_death_position(character, root_hint)
                 local root = root_hint or (character and FindFirstChild(character, "HumanoidRootPart"))
-                if not root then
-                    return nil
+                if root then
+                    local success, position = pcall(function()
+                        return root.Position
+                    end)
+                    if success then
+                        return position
+                    end
                 end
 
                 local success, position = pcall(function()
-                    return root.Position
+                    return character:GetPivot().Position
                 end)
                 return success and position or nil
             end
@@ -17119,14 +16415,33 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return count
             end
 
-            local function handle_no_ctag_bot_death(death_position, head_destroyed)
-                if cheat_client.manual_reset_pending then
-                    cheat_client.manual_reset_pending = nil
-                    return false, nil, true, false
-                end
+            local function handle_no_ctag_bot_death(death_position, character)
+                local reset_signature = false
+                local signature_deadline = tick() + 2.5
 
-                if not head_destroyed or not trinket_bot.is_near_bot_path(death_position) then
-                    return false, nil, false, false
+                repeat
+                    local head = character and FindFirstChild(character, "Head")
+                    local root = character and FindFirstChild(character, "HumanoidRootPart")
+
+                    reset_signature = character == nil
+                        or character.Parent == nil
+                        or head == nil
+                        or root == nil
+
+                    if not reset_signature then
+                        local success, assembly_root = pcall(function()
+                            return head.AssemblyRootPart
+                        end)
+                        reset_signature = success and assembly_root ~= root
+                    end
+
+                    if not reset_signature then
+                        task.wait(0.05)
+                    end
+                until reset_signature or tick() >= signature_deadline
+
+                if not reset_signature or not trinket_bot.is_near_bot_path(death_position) then
+                    return false, nil, false
                 end
 
                 local count = record_aagun_reset()
@@ -17144,10 +16459,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end)
                     task.wait(0.3)
                     plr:Kick("bot aagunned twice - kicking")
-                    return true, count, false, true
+                    return true, count, true
                 end
 
-                return false, count, false, true
+                return false, count, true
             end
 
             function trinket_bot.get_stop_at_deaths_target(target_override)
@@ -17249,7 +16564,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return false
             end
 
-            local function ExecutePath(test_mode, gate_recovery_resume)
+            local function ExecutePath(test_mode)
                 if not cheat_client or not cheat_client.config then
                     return
                 end
@@ -17262,35 +16577,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if trinket_bot.check_existing_death_limit() then
                         return
                     end
-                end
-
-                if not gate_recovery_resume then
-                    trinket_bot.gate_recovery_count = 0
-                    trinket_bot.gate_recovery_path_points = {}
-                    for path_index, path_point in ipairs(trinket_bot.path_points) do
-                        trinket_bot.gate_recovery_path_points[path_index] = table.clone(path_point)
-                    end
-                else
-                    for name, connection in pairs(trinket_bot.connections or {}) do
-                        if connection then
-                            pcall(function() connection:Disconnect() end)
-                        end
-                        trinket_bot.connections[name] = nil
-                    end
-
-                    for _, connection in ipairs(trinket_bot.illu_connections or {}) do
-                        if connection then
-                            pcall(function() connection:Disconnect() end)
-                        end
-                    end
-                    trinket_bot.illu_connections = {}
-
-                    for _, connection in ipairs(trinket_bot.gnav_connections or {}) do
-                        if connection then
-                            pcall(function() connection:Disconnect() end)
-                        end
-                    end
-                    trinket_bot.gnav_connections = {}
                 end
 
                 droppedTools = {}
@@ -17498,12 +16784,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 return
                             end
 
-                            if trinket_bot.gate_recovery_pending then
-                                cheat_client.manual_reset_pending = nil
-                                pcall(function() library:Notify("Gate recovery reset - waiting to restart path") end)
-                                return
-                            end
-
                             local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
                             local died_with_danger = character and cs:HasTag(character, "Danger")
                             local continue_for_phoenix = not test_mode
@@ -17512,18 +16792,16 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 and Toggles.StopAtPhoenixFlowers.Value
 
                             if continue_for_phoenix then
-                                local stopped, count, manual_reset, is_aagun = false, nil, false, false
+                                local stopped, count, is_aagun = false, nil, false
                                 if not died_with_danger then
-                                    stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position, FindFirstChild(character, "Head") == nil)
+                                    stopped, count, is_aagun = handle_no_ctag_bot_death(death_position, character)
                                 end
 
                                 if stopped then
                                     return
                                 end
 
-                                if manual_reset then
-                                    trinket_bot.death_continue_reason = "bot manually reset while farming Phoenix Flowers"
-                                elseif is_aagun then
+                                if is_aagun then
                                     trinket_bot.death_continue_reason = string.format("bot aagunned %d time(s) while farming Phoenix Flowers", count)
                                 elseif died_with_danger then
                                     trinket_bot.death_continue_reason = "bot died with ctag while farming Phoenix Flowers"
@@ -17546,11 +16824,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     pcall(function() library:Notify("You died (stay in server - not kicking)") end)
                                     pcall(function() utility:plain_webhook("@here bot died (stay in server mode)") end)
                                 else
-                                    local stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position, FindFirstChild(character, "Head") == nil)
+                                    local stopped, count, is_aagun = handle_no_ctag_bot_death(death_position, character)
                                     if not stopped then
-                                        if manual_reset then
-                                            pcall(function() utility:plain_webhook("@here bot manually reset (stay in server mode)") end)
-                                        elseif is_aagun then
+                                        if is_aagun then
                                             pcall(function()
                                                 utility:plain_webhook(string.format("@here bot aagunned %d time(s) (stay in server mode)", count))
                                             end)
@@ -17566,14 +16842,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         task.wait(0.3)
                                         plr:Kick("bot died")
                                     else
-                                        local stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position, FindFirstChild(character, "Head") == nil)
+                                        local stopped, count, is_aagun = handle_no_ctag_bot_death(death_position, character)
                                         if stopped then
                                             return
                                         end
 
-                                        if manual_reset then
-                                            pcall(function() utility:plain_webhook("@here bot manually reset, server hopping") end)
-                                        elseif is_aagun then
+                                        if is_aagun then
                                             pcall(function()
                                                 utility:plain_webhook(string.format("@here bot aagunned %d time(s), server hopping", count))
                                             end)
@@ -17581,8 +16855,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                             pcall(function() utility:plain_webhook("@here bot died without ctag, server hopping") end)
                                         end
                                         task.wait(15)
-                                        local serverhop_reason = manual_reset and "bot manually reset, server hopping"
-                                            or (is_aagun and "bot aagunned, server hopping" or "bot died without ctag, server hopping")
+                                        local serverhop_reason = is_aagun and "bot aagunned, server hopping"
+                                            or "bot died without ctag, server hopping"
                                         TrinketBotServerhop(serverhop_reason)
                                     end
                                 end)
@@ -19223,7 +18497,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         end
                                         break
                                     else
-                                        library:Notify(string.format("Gate %d failed after %d attempts (%s) - starting recovery", gate_index, retry_count, gate_outcome.failure_reason or "unknown"))
+                                        library:Notify(string.format("Gate %d failed after %d attempts (%s) - preparing to serverhop", gate_index, retry_count, gate_outcome.failure_reason or "unknown"))
                                         break
                                     end
                                 end
@@ -19258,104 +18532,46 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 end
 
                                 if gate_outcome.failed_gate then
-                                    local recovery_character = plr.Character
-                                    local recovery_in_danger = recovery_character and cs:HasTag(recovery_character, "Danger")
-                                    trinket_bot.gate_recovery_count = (trinket_bot.gate_recovery_count or 0) + 1
+                                    local failed_character = plr.Character
+                                    local failed_in_danger = failed_character and cs:HasTag(failed_character, "Danger")
+                                    trinket_bot.path_running = false
 
-                                    if recovery_in_danger then
-                                        library:Notify(string.format("Gate %d failed while in Danger - waiting for Danger to clear", gate_outcome.failed_gate))
-                                        while trinket_bot.path_running
-                                            and plr.Character
-                                            and cs:HasTag(plr.Character, "Danger")
+                                    if failed_in_danger then
+                                        library:Notify(string.format("Gate %d failed while in Danger - waiting before serverhop", gate_outcome.failed_gate))
+                                        while plr.Character == failed_character
+                                            and cs:HasTag(failed_character, "Danger")
                                             and not trinket_bot.moderator_detected
                                         do
                                             task.wait(0.1)
                                         end
 
-                                        if not trinket_bot.path_running or trinket_bot.moderator_detected then
+                                        if trinket_bot.moderator_detected then
                                             return
                                         end
 
-                                        library:Notify("Danger cleared - continuing gate recovery")
+                                        library:Notify("Danger cleared - serverhopping")
                                     end
 
-                                    if trinket_bot.gate_recovery_count <= 1 then
-                                        library:Notify(string.format("Gate %d failed (%s) - resetting once and restarting the original path", gate_outcome.failed_gate, gate_outcome.failure_reason or "unknown"))
-                                        trinket_bot.gate_recovery_pending = true
-
-                                        if trinket_bot.gate_recovery_connection then
-                                            pcall(function() trinket_bot.gate_recovery_connection:Disconnect() end)
-                                            trinket_bot.gate_recovery_connection = nil
-                                        end
-
-                                        trinket_bot.gate_recovery_connection = utility:Connection(plr.CharacterAdded, function(new_character)
-                                            if trinket_bot.gate_recovery_connection then
-                                                pcall(function() trinket_bot.gate_recovery_connection:Disconnect() end)
-                                                trinket_bot.gate_recovery_connection = nil
-                                            end
-
-                                            task.spawn(function()
-                                                local new_root = FindFirstChild(new_character, "HumanoidRootPart") or new_character:WaitForChild("HumanoidRootPart", 20)
-                                                local new_humanoid = FindFirstChildOfClass(new_character, "Humanoid") or new_character:WaitForChild("Humanoid", 20)
-
-                                                if not new_root or not new_humanoid then
-                                                    trinket_bot.gate_recovery_pending = false
-                                                    if test_mode then
-                                                        library:Notify("Gate recovery respawn failed - test path stopped")
-                                                    else
-                                                        TrinketBotServerhop("Gate recovery respawn failed")
-                                                    end
-                                                    return
-                                                end
-
-                                                task.wait(2)
-                                                trinket_bot.gate_recovery_pending = false
-                                                trinket_bot.path_running = false
-                                                if trinket_bot.gate_recovery_path_points and #trinket_bot.gate_recovery_path_points > 0 then
-                                                    trinket_bot.path_points = {}
-                                                    for path_index, path_point in ipairs(trinket_bot.gate_recovery_path_points) do
-                                                        trinket_bot.path_points[path_index] = table.clone(path_point)
-                                                    end
-                                                end
-                                                library:Notify("Gate recovery respawned - restarting original path from point 1")
-                                                ExecutePath(test_mode, true)
-                                            end)
-                                        end)
-
-                                        local reset_character = plr.Character
-                                        if reset_character and cs:HasTag(reset_character, "Danger") then
-                                            library:Notify("Danger detected before gate recovery reset - waiting for Danger to clear")
-                                            while trinket_bot.path_running
-                                                and plr.Character == reset_character
-                                                and cs:HasTag(reset_character, "Danger")
-                                                and not trinket_bot.moderator_detected
-                                            do
-                                                task.wait(0.1)
-                                            end
-
-                                            if not trinket_bot.path_running or trinket_bot.moderator_detected then
-                                                return
-                                            end
-                                        end
-
-                                        trinket_bot.path_running = false
-                                        utility:reset()
-                                        return
-                                    end
-
-                                    trinket_bot.path_running = false
                                     if test_mode then
-                                        library:Notify("Gate still failed after one recovery reset - test path stopped")
+                                        library:Notify(string.format("Gate %d failed - test path stopped", gate_outcome.failed_gate))
                                     else
-                                        library:Notify("Gate still failed after one recovery reset - serverhopping")
-                                        TrinketBotServerhop("Gate still failed after one recovery reset")
+                                        TrinketBotServerhop(string.format("Gate %d failed after retries", gate_outcome.failed_gate))
                                     end
                                     return
                                 end
 
                                 local failure_summary = string.format("No usable gate: %d destination(s) blocked, %d gate(s) attempted", gate_outcome.blocked, gate_outcome.attempted)
-                                library:Notify(failure_summary .. " - serverhopping")
                                 trinket_bot.path_running = false
+                                if plr.Character and cs:HasTag(plr.Character, "Danger") then
+                                    library:Notify(failure_summary .. " - waiting for Danger to clear")
+                                    while plr.Character and cs:HasTag(plr.Character, "Danger") and not trinket_bot.moderator_detected do
+                                        task.wait(0.1)
+                                    end
+                                    if trinket_bot.moderator_detected then
+                                        return
+                                    end
+                                end
+                                library:Notify(failure_summary .. " - serverhopping")
                                 TrinketBotServerhop(failure_summary)
                                 return
                             end
@@ -20312,9 +19528,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             pcall(function()
-                local loaded, gacha_module = pcall(hxd_load, "ROGUE/gacha_bot.lua")
-                if loaded and type(gacha_module) == "table" and type(gacha_module.new) == "function" then
-                    cheat_client.gacha_bot = gacha_module.new({
+                local loaded, gacha_bot = pcall(function()
+                    return GachaBotModule.new({
                         player = plr,
                         players = plrs,
                         replicated_storage = rps,
@@ -20331,9 +19546,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         reexecute_script = hxd_reexecute_script,
                         load_module = hxd_load,
                     })
+                end)
+                if loaded and type(gacha_bot) == "table" then
+                    cheat_client.gacha_bot = gacha_bot
                     cheat_client.gacha_bot:BuildUI(Tabs.Botting)
                 else
-                    library:Notify("Gacha Bot failed to load: " .. tostring(gacha_module), 6)
+                    library:Notify("Gacha Bot failed to load: " .. tostring(gacha_bot), 6)
                 end
             end)
 
@@ -20996,9 +20214,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                             or trinket_bot.auto_start_stop_at_phoenix_flowers)
 
                                     if continue_for_phoenix then
-                                        local stopped, count, manual_reset, is_aagun = false, nil, false, false
+                                        local stopped, count, is_aagun = false, nil, false
                                         if not died_with_danger then
-                                            stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position, FindFirstChild(character, "Head") == nil)
+                                            stopped, count, is_aagun = handle_no_ctag_bot_death(death_position, character)
                                         end
 
                                         if stopped then
@@ -21006,9 +20224,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         end
 
                                         local continue_reason
-                                        if manual_reset then
-                                            continue_reason = "Bot manually reset during auto-start while farming Phoenix Flowers"
-                                        elseif is_aagun then
+                                        if is_aagun then
                                             continue_reason = string.format("Bot aagunned %d time(s) during auto-start while farming Phoenix Flowers", count)
                                         elseif died_with_danger then
                                             continue_reason = "Bot died with ctag during auto-start while farming Phoenix Flowers"
@@ -21046,15 +20262,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         pcall(function() library:Notify("Died during auto-start (stay in server mode)") end)
                                         pcall(function() utility:plain_webhook("@here Bot died during auto-start (stay in server mode)") end)
                                     elseif not died_with_danger then
-                                        local stopped, count, manual_reset, is_aagun = handle_no_ctag_bot_death(death_position, FindFirstChild(character, "Head") == nil)
+                                        local stopped, count, is_aagun = handle_no_ctag_bot_death(death_position, character)
                                         if stopped then
                                             return
                                         end
 
                                         if stay_in_server then
-                                            if manual_reset then
-                                                pcall(function() utility:plain_webhook("@here Bot manually reset during auto-start (stay in server mode)") end)
-                                            elseif is_aagun then
+                                            if is_aagun then
                                                 pcall(function()
                                                     utility:plain_webhook(string.format("@here Bot aagunned %d time(s) during auto-start (stay in server mode)", count))
                                                 end)
@@ -21062,9 +20276,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                                 pcall(function() utility:plain_webhook("@here Bot died without ctag during auto-start (stay in server mode)") end)
                                             end
                                         else
-                                            if manual_reset then
-                                                pcall(function() utility:plain_webhook("@here Bot manually reset during auto-start - serverhopping") end)
-                                            elseif is_aagun then
+                                            if is_aagun then
                                                 pcall(function()
                                                     utility:plain_webhook(string.format("@here Bot aagunned %d time(s) during auto-start - serverhopping", count))
                                                 end)
@@ -21072,8 +20284,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                                 pcall(function() utility:plain_webhook("@here Bot died without ctag during auto-start - serverhopping") end)
                                             end
                                             task.wait(15)
-                                            local serverhop_reason = manual_reset and "Bot manually reset during auto-start"
-                                                or (is_aagun and "Bot aagunned during auto-start" or "Bot died without ctag during auto-start")
+                                            local serverhop_reason = is_aagun and "Bot aagunned during auto-start"
+                                                or "Bot died without ctag during auto-start"
                                             TrinketBotServerhop(serverhop_reason)
                                         end
                                     else
@@ -21174,16 +20386,27 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                             end
                                         end
 
+                                        local path_has_gates = false
+                                        for _, check_point in ipairs(trinket_bot.path_points) do
+                                            if check_point.is_gate_point then
+                                                path_has_gates = true
+                                                break
+                                            end
+                                        end
+
+                                        if distance_to_first > 400 and path_has_gates then
+                                            library:Notify(string.format("Auto-start is %.1f studs from point 1 - recovering through Gate 1", distance_to_first))
+                                            if auto_start_death_connection then
+                                                pcall(function() auto_start_death_connection:Disconnect() end)
+                                                auto_start_death_connection = nil
+                                            end
+                                            trinket_bot.path_running = false
+                                            ExecutePath(false)
+                                            return
+                                        end
+
                                         if closest_distance < 2000 then
                                             if closest_point_index > 1 then
-                                                local path_has_gates = false
-                                                for _, check_point in ipairs(trinket_bot.path_points) do
-                                                    if check_point.is_gate_point then
-                                                        path_has_gates = true
-                                                        break
-                                                    end
-                                                end
-
                                                 if path_has_gates and saved_position then
                                                     library:Notify(string.format("Resuming after serverhop - continuing from saved position (closest point %d)", closest_point_index))
                                                     task.wait(1)
