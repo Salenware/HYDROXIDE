@@ -1068,51 +1068,14 @@ function GachaBot:readPhysicalConfig(union)
         return type(value) == "string" and #value > 100
     end
 
-    local function readVolt()
-        if type(gethiddenproperty) ~= "function" then return nil end
-        local ok, value = pcall(gethiddenproperty, union, "PhysicalConfigData")
-        if not ok then return nil end
-        if valid(value) then return value, "gethiddenproperty" end
-        if type(value) == "table" then
-            if valid(value[2]) then return value[2], "gethiddenproperty[2]" end
-            for _, item in pairs(value) do
-                if valid(item) then return item, "gethiddenproperty table" end
-            end
-        end
-        return nil
-    end
-
-    local function readPotassium()
-        local readers = {}
-        if type(getpcd) == "function" then readers[#readers + 1] = getpcd end
-        if type(getpcdprop) == "function" then readers[#readers + 1] = getpcdprop end
-        for _, reader in ipairs(readers) do
-            local ok, hash, binary = pcall(reader, union)
-            if ok then
-                if valid(binary) then return binary, "getpcd binary" end
-                if valid(hash) then return hash, "getpcd primary" end
-            end
-        end
-        return nil
-    end
-
-    local executorName = ""
-    if type(identifyexecutor) == "function" then
-        local ok, name = pcall(identifyexecutor)
-        if ok then executorName = tostring(name):lower() end
-    end
-
-    local firstReader = executorName:find("potassium", 1, true) and readPotassium or readVolt
-    local secondReader = firstReader == readPotassium and readVolt or readPotassium
-    local stream, source = firstReader()
-    if stream then return stream, source end
-    stream, source = secondReader()
-    if stream then return stream, source end
-
-    if type(gethiddenproperty) == "function" then
-        for _, property in ipairs({"BinaryData", "MeshData", "RawData", "ConfigData"}) do
-            local ok, value = pcall(gethiddenproperty, union, property)
-            if ok and valid(value) then return value, property end
+    if type(gethiddenproperty) ~= "function" then return nil end
+    local ok, value = pcall(gethiddenproperty, union, "PhysicalConfigData")
+    if not ok then return nil end
+    if valid(value) then return value, "gethiddenproperty" end
+    if type(value) == "table" then
+        if valid(value[2]) then return value[2], "gethiddenproperty[2]" end
+        for _, item in pairs(value) do
+            if valid(item) then return item, "gethiddenproperty table" end
         end
     end
     return nil
