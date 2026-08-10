@@ -30967,18 +30967,14 @@ end
 
             local API_URL = "https://salenwarehub-control.salenwarehub.workers.dev"
             local CLIENT_TOKEN = "EICC_QZQ4ySw5NK92z6DaaIjq40F7FK4n0Gdy5se4OE"
-            local VERSION = "salenwarehub-0.5.0"
+            local VERSION = "salenwarehub-0.6.0"
             local SESSION_STARTED_AT = os.time()
-            local MAX_CHAT_BUFFER = 200
-            local MAX_CHAT_BATCH = 50
             local MAX_BOT_NOTIFICATION_BATCH = 25
 
             local Players = game:GetService("Players")
             local HttpService = game:GetService("HttpService")
             local StarterGui = game:GetService("StarterGui")
             local CoreGui = game:GetService("CoreGui")
-            local TextChatService = game:GetService("TextChatService")
-            local Workspace = game:GetService("Workspace")
 
             local environment = getgenv()
             local player = Players.LocalPlayer
@@ -31000,9 +30996,9 @@ end
             local effectSound
             local adapter = environment.SalenwareRemoteAdapter or {}
             local connections = {}
-            local chattedConnections = {}
-            local chatBuffer = {}
-            local recentChat = {}
+            local lastStatusSnapshot
+            local lastControlsSnapshot
+            local lastServerSnapshot
 
             local EFFECTS = {
                 flash = {
@@ -31202,88 +31198,11 @@ end
                 return {}
             end
 
-            local function acknowledgeBotNotifications(count)
+            local function acknowledgeBotNotifications(accepted)
                 if type(adapter.acknowledge_bot_notifications) == "function" then
-                    pcall(adapter.acknowledge_bot_notifications, count)
+                    pcall(adapter.acknowledge_bot_notifications, accepted)
                 end
             end
-
-            local function serverTime()
-                local ok, value = pcall(function()
-                    return Workspace:GetServerTimeNow()
-                end)
-                if ok and type(value) == "number" then
-                    return value
-                end
-                return os.time()
-            end
-
-            local function trimMessage(value)
-                local text = tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
-                if #text > 240 then
-                    text = text:sub(1, 240)
-                end
-                return text
-            end
-
-            local function recordChat(sender, text)
-                text = trimMessage(text)
-                if text == "" then return end
-
-                local timestamp = serverTime()
-                local senderId = sender and sender.UserId or 0
-                local senderName = sender and sender.Name or "System"
-                local key = tostring(senderId) .. "\n" .. text
-                local seenAt = recentChat[key]
-                if seenAt and timestamp - seenAt < 2 then return end
-                recentChat[key] = timestamp
-
-                table.insert(chatBuffer, {
-                    sender_user_id = senderId,
-                    sender_name = senderName,
-                    message = text,
-                    server_timestamp = timestamp,
-                })
-                while #chatBuffer > MAX_CHAT_BUFFER do
-                    table.remove(chatBuffer, 1)
-                end
-
-                if math.random(1, 20) == 1 then
-                    for seenKey, seenAt in pairs(recentChat) do
-                        if timestamp - seenAt > 10 then
-                            recentChat[seenKey] = nil
-                        end
-                    end
-                end
-            end
-
-            local function watchPlayer(target)
-                if chattedConnections[target] then return end
-                chattedConnections[target] = target.Chatted:Connect(function(message)
-                    recordChat(target, message)
-                end)
-            end
-
-            for _, target in ipairs(Players:GetPlayers()) do
-                watchPlayer(target)
-            end
-
-            table.insert(connections, Players.PlayerAdded:Connect(watchPlayer))
-            table.insert(connections, Players.PlayerRemoving:Connect(function(target)
-                local connection = chattedConnections[target]
-                if connection then
-                    pcall(function() connection:Disconnect() end)
-                    chattedConnections[target] = nil
-                end
-            end))
-
-            pcall(function()
-                table.insert(connections, TextChatService.MessageReceived:Connect(function(message)
-                    local source = message.TextSource
-                    local sender = source and Players:GetPlayerByUserId(source.UserId) or nil
-                    recordChat(sender, message.Text)
-                end))
-            end)
 
             local function fallbackServerSnapshot()
                 local players = {}
@@ -31359,13 +31278,13 @@ end
             end
 
             local function heartbeat()
-                local batch = {}
-                for index = 1, math.min(MAX_CHAT_BATCH, #chatBuffer) do
-                    batch[index] = chatBuffer[index]
-                end
-                local bot_notifications = getBotNotifications()
-
-                local response = post("/api/client/heartbeat", {
+                local status = getStatus()
+                local controls = getControls()
+                local server = getServerSnapshot()
+                local statusSnapshot = HttpService:JSONEncode(status)
+                local controlsSnapshot = HttpService:JSONEncode(controls)
+                local serverSnapshot = HttpService:JSONEncode(server)
+                local payload = {
                     user_id = player.UserId,
                     username = player.Name,
                     display_name = player.DisplayName,
@@ -31374,19 +31293,30 @@ end
                     job_id = game.JobId,
                     version = VERSION,
                     session_started_at = SESSION_STARTED_AT,
-                    status = getStatus(),
-                    controls = getControls(),
-                    server = getServerSnapshot(),
-                    chat = batch,
-                    bot_notifications = bot_notifications,
-                })
+                }
+                if statusSnapshot ~= lastStatusSnapshot then payload.status = status end
+                if controlsSnapshot ~= lastControlsSnapshot then payload.controls = controls end
+                if serverSnapshot ~= lastServerSnapshot then payload.server = server end
 
-                acknowledgeBotNotifications(response.bot_notifications_accepted or {})
-                for _ = 1, #batch do
-                    table.remove(chatBuffer, 1)
-                end
+                local response = post("/api/client/heartbeat", payload)
+                if payload.status then lastStatusSnapshot = statusSnapshot end
+                if payload.controls then lastControlsSnapshot = controlsSnapshot end
+                if payload.server then lastServerSnapshot = serverSnapshot end
+
                 for _, command in ipairs(response.commands or {}) do
                     task.spawn(executeCommand, command)
+                end
+
+                local notifications = getBotNotifications()
+                if #notifications > 0 then
+                    local eventResponse = post("/api/client/bot-notifications", {
+                        user_id = player.UserId,
+                        place_id = game.PlaceId,
+                        job_id = game.JobId,
+                        bot_started_at = status.bot_started_at,
+                        notifications = notifications,
+                    })
+                    acknowledgeBotNotifications(eventResponse.accepted or {})
                 end
             end
 
@@ -31399,11 +31329,6 @@ end
                     pcall(function() connection:Disconnect() end)
                 end
                 table.clear(connections)
-
-                for target, connection in pairs(chattedConnections) do
-                    pcall(function() connection:Disconnect() end)
-                    chattedConnections[target] = nil
-                end
             end
 
             environment.SalenwareRemote = {
@@ -31423,6 +31348,9 @@ end
                     else
                         environment.SalenwareRemoteLastHeartbeatError = tostring(err)
                         environment.SalenwareRemoteInitStage = "heartbeat_failed"
+                        lastStatusSnapshot = nil
+                        lastControlsSnapshot = nil
+                        lastServerSnapshot = nil
                         retryDelay = math.min(math.max(retryDelay * 2, 2), 20)
                     end
                     task.wait(retryDelay)
