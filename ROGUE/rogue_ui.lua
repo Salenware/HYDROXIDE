@@ -1826,6 +1826,721 @@ return {
 }
 end)()
 
+local ScroomBotModule = (function()
+local ScroomBot = {}
+ScroomBot.__index = ScroomBot
+
+local PURGATORY_PATH = {
+    Vector3.new(-7183.500, 274.759, 2796.500),
+    Vector3.new(-7167.606, 274.759, 2771.491),
+    Vector3.new(-7141.430, 274.759, 2771.280),
+}
+
+function ScroomBot.new(context)
+    return setmetatable({
+        ctx = context,
+        player = context.player,
+        players = context.players,
+        workspace = context.workspace,
+        collectionService = context.collection_service,
+        library = context.library,
+        options = context.options,
+        running = false,
+        generation = 0,
+        gripperName = nil,
+        connections = {},
+    }, ScroomBot)
+end
+
+function ScroomBot:isCurrent(generation)
+    return self.running
+        and self.generation == generation
+        and not (shared and shared.is_unloading)
+end
+
+function ScroomBot:getPlayerData(player)
+    local character = player and player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    return character, humanoid, root
+end
+
+function ScroomBot:getGripper()
+    if not self.gripperName then return nil end
+    local gripper = self.players:FindFirstChild(self.gripperName)
+    local character, humanoid, root = self:getPlayerData(gripper)
+    if not gripper or not character or not humanoid or humanoid.Health <= 0 or not root then
+        return nil
+    end
+    return gripper, character, humanoid, root
+end
+
+function ScroomBot:getGripperNames()
+    local names = {}
+    for _, player in ipairs(self.players:GetPlayers()) do
+        if player ~= self.player then
+            names[#names + 1] = player.Name
+        end
+    end
+    table.sort(names, function(a, b)
+        return a:lower() < b:lower()
+    end)
+    return names
+end
+
+function ScroomBot:refreshGrippers()
+    local dropdown = self.options and self.options.ScroomBotGripper
+    if not dropdown then return end
+    local names = self:getGripperNames()
+    local selectedExists = false
+    for _, name in ipairs(names) do
+        if name == self.gripperName then
+            selectedExists = true
+            break
+        end
+    end
+    dropdown:SetValues(names)
+    if selectedExists then
+        dropdown:SetValue(self.gripperName)
+    elseif self.gripperName then
+        self.gripperName = nil
+        dropdown:SetValue(nil)
+    end
+end
+
+function ScroomBot:Stop(reason, silent)
+    if not self.running and not reason then return end
+    local wasRunning = self.running
+    self.running = false
+    self.generation += 1
+
+    local _, humanoid, root = self:getPlayerData(self.player)
+    if humanoid and root then
+        humanoid:MoveTo(root.Position)
+    end
+
+    if reason then
+        self.library:Notify(reason, 4)
+    end
+    if wasRunning and not silent then
+        self.library:Notify("Scroom Bot stopped", 3)
+    end
+end
+
+function ScroomBot:isPurgatory(root)
+    if not root then return false end
+    for _, point in ipairs(PURGATORY_PATH) do
+        if (root.Position - point).Magnitude <= 300 then
+            return true
+        end
+    end
+    return false
+end
+
+function ScroomBot:walkTo(generation, character, humanoid, root, target, timeout, tolerance)
+    local deadline = os.clock() + (timeout or 20)
+    tolerance = tolerance or 5
+
+    repeat
+        if not self:isCurrent(generation)
+            or self.player.Character ~= character
+            or not humanoid.Parent
+            or humanoid.Health <= 0
+            or not root.Parent
+        then
+            return false
+        end
+        humanoid:MoveTo(target)
+        task.wait(0.25)
+    until (root.Position - target).Magnitude <= tolerance or os.clock() >= deadline
+
+    return (root.Position - target).Magnitude <= tolerance
+end
+
+function ScroomBot:getFirstDialogueChoice()
+    local playerGui = self.player:FindFirstChildOfClass("PlayerGui")
+    local dialogueGui = playerGui and playerGui:FindFirstChild("DialogueGui")
+    local frame = dialogueGui and dialogueGui:FindFirstChild("DialogueFrame")
+    local choices = frame and frame:FindFirstChild("Choices")
+    if not frame or not frame.Visible or not choices then return nil end
+
+    local buttons = {}
+    for _, option in ipairs(choices:GetChildren()) do
+        if option:IsA("GuiObject") and option.Visible then
+            local button = option:IsA("TextButton") and option
+                or option:FindFirstChildWhichIsA("TextButton", true)
+            if button and button.Visible then
+                buttons[#buttons + 1] = {
+                    button = button,
+                    position = option.AbsolutePosition,
+                }
+            end
+        end
+    end
+    table.sort(buttons, function(a, b)
+        if a.position.Y == b.position.Y then
+            return a.position.X < b.position.X
+        end
+        return a.position.Y < b.position.Y
+    end)
+    return buttons[1] and buttons[1].button
+end
+
+function ScroomBot:runPurgatory(generation, character, humanoid, root)
+    for _, point in ipairs(PURGATORY_PATH) do
+        if not self:walkTo(generation, character, humanoid, root, point, 25, 5) then
+            return false
+        end
+    end
+
+    local npcs = self.workspace:FindFirstChild("NPCs")
+    local ferryman = npcs and (npcs:FindFirstChild("Ferryman") or npcs:FindFirstChild("The Ferryman"))
+    local clickDetector = ferryman and ferryman:FindFirstChildWhichIsA("ClickDetector", true)
+    if not clickDetector then
+        self:Stop("Ferryman not found")
+        return false
+    end
+
+    local deadline = os.clock() + 60
+    while self:isCurrent(generation)
+        and self.player.Character == character
+        and os.clock() < deadline
+    do
+        local firstChoice = self:getFirstDialogueChoice()
+        if firstChoice then
+            pcall(firesignal, firstChoice.MouseButton1Click)
+            task.wait(0.2)
+        else
+            pcall(fireclickdetector, clickDetector)
+            task.wait(0.25)
+        end
+    end
+
+    if self:isCurrent(generation) and self.player.Character == character then
+        self:Stop("Ferryman respawn timed out")
+        return false
+    end
+    return true
+end
+
+function ScroomBot:followGripper(generation, character, humanoid, root)
+    while self:isCurrent(generation)
+        and self.player.Character == character
+        and humanoid.Parent
+        and humanoid.Health > 0
+    do
+        local _, _, _, gripperRoot = self:getGripper()
+        if not gripperRoot then
+            self:Stop("Gripper not found")
+            return false
+        end
+
+        local offset = root.Position - gripperRoot.Position
+        local distance = offset.Magnitude
+        if distance <= 2.75 then
+            humanoid:MoveTo(root.Position)
+            return true
+        end
+
+        local direction = distance > 0.01 and offset.Unit or -gripperRoot.CFrame.LookVector
+        humanoid:MoveTo(gripperRoot.Position + direction * 2.75)
+        task.wait(0.2)
+    end
+    return false
+end
+
+function ScroomBot:run(generation)
+    while self:isCurrent(generation) do
+        local gripper = self:getGripper()
+        if not gripper then
+            self:Stop("Gripper not found")
+            return
+        end
+
+        local character, humanoid, root = self:getPlayerData(self.player)
+        if not character or not humanoid or not root or humanoid.Health <= 0 then
+            task.wait(0.25)
+        elseif self:isPurgatory(root) then
+            self:runPurgatory(generation, character, humanoid, root)
+        elseif self.collectionService:HasTag(character, "Knocked")
+            or self.collectionService:HasTag(character, "Unconscious")
+            or self.collectionService:HasTag(character, "BeingExecuted")
+        then
+            task.wait(0.2)
+        elseif self:followGripper(generation, character, humanoid, root) then
+            local knocked = self.ctx.perform_self_knock(function()
+                return not self:isCurrent(generation)
+                    or self.player.Character ~= character
+            end)
+            if not knocked and self:isCurrent(generation) and self.player.Character == character then
+                self.library:Notify("Scroom Bot could not confirm the Knocked state.", 3)
+                task.wait(0.5)
+            end
+        end
+    end
+end
+
+function ScroomBot:Start()
+    if self.running then return end
+    if not self.gripperName then
+        self.library:Notify("Select a gripper first.", 3)
+        return
+    end
+    if not self.ctx.can_use_fall_action("Scroom Bot") then return end
+    if not self:getGripper() then
+        self.library:Notify("Gripper not found", 4)
+        return
+    end
+
+    self.running = true
+    self.generation += 1
+    local generation = self.generation
+    self.library:Notify("Scroom Bot started", 3)
+    task.spawn(function()
+        self:run(generation)
+    end)
+end
+
+function ScroomBot:BuildUI(group)
+    group:AddDropdown("ScroomBotGripper", {
+        Text = "Gripper",
+        Values = self:getGripperNames(),
+        Default = nil,
+        Multi = false,
+        Searchable = true,
+        AllowNull = false,
+        Callback = function(value)
+            self.gripperName = value
+            task.defer(function()
+                local dropdown = self.options and self.options.ScroomBotGripper
+                if dropdown and dropdown.Menu then
+                    dropdown.Menu:Close()
+                end
+            end)
+        end,
+    })
+    group:AddButton({
+        Text = "Start",
+        Func = function() self:Start() end,
+    }):AddButton({
+        Text = "Stop",
+        Func = function() self:Stop() end,
+    })
+
+    self.connections[#self.connections + 1] = self.players.PlayerAdded:Connect(function()
+        task.defer(function() self:refreshGrippers() end)
+    end)
+    self.connections[#self.connections + 1] = self.players.PlayerRemoving:Connect(function(player)
+        if player.Name == self.gripperName and self.running then
+            self:Stop("Gripper not found")
+        end
+        task.defer(function() self:refreshGrippers() end)
+    end)
+end
+
+function ScroomBot:Destroy()
+    self:Stop(nil, true)
+    for _, connection in ipairs(self.connections) do
+        pcall(connection.Disconnect, connection)
+    end
+    table.clear(self.connections)
+end
+
+return {
+    new = function(context)
+        return ScroomBot.new(context)
+    end,
+}
+end)()
+
+local HealerPotsFeedModule = (function()
+local HealerPotsFeed = {}
+HealerPotsFeed.__index = HealerPotsFeed
+
+local SETTINGS = {
+    followDistance = 1.1,
+    feedRange = 6,
+    followTolerance = 0.35,
+    loopInterval = 0.12,
+    equipDelay = 0.25,
+    feedSpamInterval = 0.12,
+    feedCompletionTimeout = 6,
+    retryDelay = 1,
+}
+
+function HealerPotsFeed.new(context)
+    return setmetatable({
+        player = context.player,
+        players = context.players,
+        workspace = context.workspace,
+        collectionService = context.collection_service,
+        library = context.library,
+        options = context.options,
+        running = false,
+        feeding = false,
+        generation = 0,
+        victimName = nil,
+        nextFeedAttempt = 0,
+        connections = {},
+    }, HealerPotsFeed)
+end
+
+function HealerPotsFeed:isCurrent(generation)
+    return self.running
+        and self.generation == generation
+        and not (shared and shared.is_unloading)
+end
+
+function HealerPotsFeed:getPlayerData(player)
+    local character = player and player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    return character, humanoid, root
+end
+
+function HealerPotsFeed:hasTag(character, tag)
+    return character ~= nil and self.collectionService:HasTag(character, tag)
+end
+
+function HealerPotsFeed:stopWalking(humanoid, root)
+    if humanoid and root then
+        humanoid:MoveTo(root.Position)
+    end
+end
+
+function HealerPotsFeed:getVictimNames()
+    local names = {}
+    for _, player in ipairs(self.players:GetPlayers()) do
+        if player ~= self.player then
+            names[#names + 1] = player.Name
+        end
+    end
+    table.sort(names, function(a, b)
+        return a:lower() < b:lower()
+    end)
+    return names
+end
+
+function HealerPotsFeed:getVictim()
+    return self.victimName and self.players:FindFirstChild(self.victimName) or nil
+end
+
+function HealerPotsFeed:refreshVictims()
+    local dropdown = self.options and self.options.HealerPotsVictim
+    if not dropdown then return end
+
+    local names = self:getVictimNames()
+    local selectedExists = false
+    for _, name in ipairs(names) do
+        if name == self.victimName then
+            selectedExists = true
+            break
+        end
+    end
+
+    dropdown:SetValues(names)
+    if selectedExists then
+        dropdown:SetValue(self.victimName)
+    elseif self.victimName then
+        self.victimName = nil
+        dropdown:SetValue(nil)
+    end
+end
+
+function HealerPotsFeed:findPotion(character)
+    local backpack = self.player:FindFirstChildOfClass("Backpack")
+    for _, container in ipairs({character, backpack}) do
+        if container then
+            local exact = container:FindFirstChild("Health Potion")
+            if exact and exact:IsA("Tool") then
+                return exact
+            end
+
+            for _, child in ipairs(container:GetChildren()) do
+                if child:IsA("Tool") and child.Name:lower():find("health potion", 1, true) then
+                    return child
+                end
+            end
+        end
+    end
+    return nil
+end
+
+function HealerPotsFeed:equipPotionWhenAvailable(generation, character, humanoid, timeout)
+    local deadline = os.clock() + (timeout or 0)
+    repeat
+        local potion = self:findPotion(character)
+        if potion then
+            if potion.Parent ~= character then
+                humanoid:EquipTool(potion)
+            end
+            return true
+        end
+        task.wait(0.05)
+    until not self:isCurrent(generation) or os.clock() >= deadline
+    return false
+end
+
+function HealerPotsFeed:horizontalUnit(vector, fallback)
+    local flat = Vector3.new(vector.X, 0, vector.Z)
+    return flat.Magnitude > 0.001 and flat.Unit or fallback or Vector3.new(0, 0, 1)
+end
+
+function HealerPotsFeed:followVictim(healerHumanoid, healerRoot, victimRoot, unconscious)
+    local direction
+    if unconscious then
+        direction = self:horizontalUnit(healerRoot.Position - victimRoot.Position)
+    else
+        direction = -self:horizontalUnit(victimRoot.CFrame.LookVector)
+    end
+
+    local desired = victimRoot.Position + direction * SETTINGS.followDistance
+    desired = Vector3.new(desired.X, healerRoot.Position.Y, desired.Z)
+    if (healerRoot.Position - desired).Magnitude > SETTINGS.followTolerance then
+        healerHumanoid:MoveTo(desired)
+    else
+        self:stopWalking(healerHumanoid, healerRoot)
+    end
+end
+
+function HealerPotsFeed:buildPourArguments(healerCharacter, victimCharacter, victimRoot)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = {healerCharacter, victimCharacter}
+
+    local result = self.workspace:Raycast(
+        victimRoot.Position + Vector3.new(0, 6, 0),
+        Vector3.new(0, -24, 0),
+        params
+    )
+    if not result then return nil, nil end
+
+    local camera = self.workspace.CurrentCamera
+    local rotation = camera and camera.CFrame.Rotation or CFrame.identity
+    return CFrame.new(result.Position) * rotation, result.Instance
+end
+
+function HealerPotsFeed:waitForFeedCompletion(generation, victim, victimCharacter)
+    local deadline = os.clock() + SETTINGS.feedCompletionTimeout
+    repeat
+        if victim.Character ~= victimCharacter then return false end
+        if not self:hasTag(victimCharacter, "BeingExecuted")
+            and not self:hasTag(victimCharacter, "Unconscious")
+        then
+            return true
+        end
+        task.wait(0.05)
+    until not self:isCurrent(generation) or os.clock() >= deadline
+    return false
+end
+
+function HealerPotsFeed:feedVictim(generation, victim, victimCharacter, victimRoot)
+    local healerCharacter, healerHumanoid, healerRoot = self:getPlayerData(self.player)
+    if not healerCharacter or not healerHumanoid or not healerRoot then return false end
+    if self:hasTag(healerCharacter, "Unconscious")
+        or self:hasTag(healerCharacter, "BeingExecuted")
+        or victim.Character ~= victimCharacter
+        or not self:hasTag(victimCharacter, "Unconscious")
+        or self:hasTag(victimCharacter, "BeingExecuted")
+        or (healerRoot.Position - victimRoot.Position).Magnitude > SETTINGS.feedRange
+    then
+        return false
+    end
+
+    local potion = self:findPotion(healerCharacter)
+    if not potion then return false end
+    if potion.Parent ~= healerCharacter then
+        healerHumanoid:EquipTool(potion)
+        task.wait(SETTINGS.equipDelay)
+    end
+
+    healerCharacter, healerHumanoid, healerRoot = self:getPlayerData(self.player)
+    victimCharacter = victim.Character
+    victimRoot = victimCharacter and victimCharacter:FindFirstChild("HumanoidRootPart")
+    if not healerCharacter or not healerHumanoid or not healerRoot
+        or not victimCharacter or not victimRoot
+        or not self:hasTag(victimCharacter, "Unconscious")
+        or self:hasTag(victimCharacter, "BeingExecuted")
+        or (healerRoot.Position - victimRoot.Position).Magnitude > SETTINGS.feedRange
+    then
+        return false
+    end
+
+    self:stopWalking(healerHumanoid, healerRoot)
+    self.feeding = true
+    local accepted = false
+
+    while self:isCurrent(generation) do
+        healerCharacter, healerHumanoid, healerRoot = self:getPlayerData(self.player)
+        victimCharacter = victim.Character
+        victimRoot = victimCharacter and victimCharacter:FindFirstChild("HumanoidRootPart")
+        if not healerCharacter or not healerHumanoid or not healerRoot
+            or not victimCharacter or not victimRoot
+            or self:hasTag(healerCharacter, "Unconscious")
+            or self:hasTag(healerCharacter, "BeingExecuted")
+            or (healerRoot.Position - victimRoot.Position).Magnitude > SETTINGS.feedRange
+        then
+            break
+        end
+
+        if self:hasTag(victimCharacter, "BeingExecuted")
+            or not self:hasTag(victimCharacter, "Unconscious")
+        then
+            accepted = true
+            break
+        end
+
+        potion = self:findPotion(healerCharacter)
+        if not potion then break end
+        if potion.Parent ~= healerCharacter then
+            healerHumanoid:EquipTool(potion)
+            task.wait(SETTINGS.equipDelay)
+        end
+
+        potion = self:findPotion(healerCharacter)
+        local remote = potion and potion:FindFirstChild("RemoteEvent")
+        local hitCFrame, hitPart = self:buildPourArguments(healerCharacter, victimCharacter, victimRoot)
+        if remote and hitCFrame and hitPart then
+            pcall(remote.FireServer, remote, hitCFrame, hitPart, "Pour")
+        end
+        task.wait(SETTINGS.feedSpamInterval)
+    end
+
+    local success = accepted
+        and self:isCurrent(generation)
+        and self:waitForFeedCompletion(generation, victim, victimCharacter)
+        or false
+    self.feeding = false
+
+    local currentCharacter, currentHumanoid = self:getPlayerData(self.player)
+    if currentCharacter and currentHumanoid and self:isCurrent(generation) then
+        self:equipPotionWhenAvailable(generation, currentCharacter, currentHumanoid, 1.5)
+    end
+    return success
+end
+
+function HealerPotsFeed:run(generation)
+    while self:isCurrent(generation) do
+        local victim = self:getVictim()
+        if not victim then
+            self:Stop("Victim not found")
+            return
+        end
+
+        local healerCharacter, healerHumanoid, healerRoot = self:getPlayerData(self.player)
+        local victimCharacter, _, victimRoot = self:getPlayerData(victim)
+        if healerCharacter and healerHumanoid and healerRoot and victimCharacter and victimRoot then
+            local unconscious = self:hasTag(victimCharacter, "Unconscious")
+            if self:hasTag(victimCharacter, "BeingExecuted") then
+                self:stopWalking(healerHumanoid, healerRoot)
+            else
+                self:followVictim(healerHumanoid, healerRoot, victimRoot, unconscious)
+                if unconscious
+                    and (healerRoot.Position - victimRoot.Position).Magnitude <= SETTINGS.feedRange
+                    and os.clock() >= self.nextFeedAttempt
+                then
+                    self:feedVictim(generation, victim, victimCharacter, victimRoot)
+                    self.nextFeedAttempt = os.clock() + SETTINGS.retryDelay
+                end
+            end
+        elseif healerHumanoid and healerRoot then
+            self:stopWalking(healerHumanoid, healerRoot)
+        end
+        task.wait(SETTINGS.loopInterval)
+    end
+end
+
+function HealerPotsFeed:Start()
+    if self.running then return end
+    if not self.victimName then
+        self.library:Notify("Select a victim first.", 3)
+        return
+    end
+    if not self:getVictim() then
+        self.library:Notify("Victim not found", 4)
+        return
+    end
+
+    self.running = true
+    self.feeding = false
+    self.nextFeedAttempt = 0
+    self.generation += 1
+    local generation = self.generation
+    self.library:Notify("Healer Pots feed started", 3)
+    task.spawn(function()
+        self:run(generation)
+    end)
+end
+
+function HealerPotsFeed:Stop(reason, silent)
+    if not self.running and not reason then return end
+    local wasRunning = self.running
+    self.running = false
+    self.feeding = false
+    self.generation += 1
+
+    local _, humanoid, root = self:getPlayerData(self.player)
+    self:stopWalking(humanoid, root)
+    if reason then
+        self.library:Notify(reason, 4)
+    end
+    if wasRunning and not silent then
+        self.library:Notify("Healer Pots feed stopped", 3)
+    end
+end
+
+function HealerPotsFeed:BuildUI(group)
+    group:AddDropdown("HealerPotsVictim", {
+        Text = "Victim",
+        Values = self:getVictimNames(),
+        Default = nil,
+        Multi = false,
+        Searchable = true,
+        AllowNull = false,
+        Callback = function(value)
+            self.victimName = value
+            task.defer(function()
+                local dropdown = self.options and self.options.HealerPotsVictim
+                if dropdown and dropdown.Menu then
+                    dropdown.Menu:Close()
+                end
+            end)
+        end,
+    })
+    group:AddButton({
+        Text = "Start",
+        Func = function() self:Start() end,
+    }):AddButton({
+        Text = "Stop",
+        Func = function() self:Stop() end,
+    })
+
+    self.connections[#self.connections + 1] = self.players.PlayerAdded:Connect(function()
+        task.defer(function() self:refreshVictims() end)
+    end)
+    self.connections[#self.connections + 1] = self.players.PlayerRemoving:Connect(function(player)
+        if player.Name == self.victimName and self.running then
+            self:Stop("Victim not found")
+        end
+        task.defer(function() self:refreshVictims() end)
+    end)
+end
+
+function HealerPotsFeed:Destroy()
+    self:Stop(nil, true)
+    for _, connection in ipairs(self.connections) do
+        pcall(connection.Disconnect, connection)
+    end
+    table.clear(self.connections)
+end
+
+return {
+    new = function(context)
+        return HealerPotsFeed.new(context)
+    end,
+}
+end)()
+
 hxd_env.HXD_REMOTE_ROOT = hxd_env.HXD_REMOTE_ROOT or HXD_DEFAULT_REMOTE_ROOT
 hxd_env.HXD_LOCAL_ROOT = hxd_env.HXD_LOCAL_ROOT or HXD_DEFAULT_LOCAL_ROOT
 
@@ -2259,6 +2974,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         notifications = {},
     }
     local cheat_client = {
+        fall_damage_remote = nil,
         config = {
             anticheat_mode = "Normal",
             perflora_teleport = false,
@@ -2661,6 +3377,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         },
         artifacts = {"Rift Gem", "Lannis's Amulet", "Amulet of the White King", "Scroll of Fimbulvetr", "Scroll of Percutiens", "Scroll of Hoppa", "Scroll of Snarvindur", "Scroll of Manus Dei", "Spider Cloak", "Night Stone", "Philosophers Stone", "Howler Friend", "Phoenix Down", "Azael Horn", "Mysterious Artifact", "Fairfrozen", "Phoenix Flower"},
         spec_skills = {"Eyes of Justice", "Justinian's Helm", "Speech", "Undying Justinian", "Handgun", "StaticField", "Chain Lightning", "Flying Mushroom God", "Flying Flower God", "Overgrowth", "Scroomflora", "Mind Read", "Domination Rune", "Bestowal", "Domination", "Despair", "Better Manus Dei", "Better Mori", "Maledicta Terra", "Terrible Scream", "FrostAura", "Ray of Frost", "Aculeor", "Infettare", "Sylvester's Cloak", "Jester's Trick", "Quick Stop", "Abyssbypass", "VeryCoolBard", "Snowball", "Time Halt", "Time Erase", "Jester's Ruse", "Jester's Scheme", "Wallet Swipe", "Epitaph", "Pondus", "Darkness"},
+        spoofed_mod_profiles = {
+            [616708250] = {
+                username = "99_Purity",
+                skills = {"Snowball", "Time Halt", "Time Erase", "Jester's Ruse", "Jester's Scheme", "Wallet Swipe", "Epitaph"},
+                spells = {"Pondus"},
+            },
+        },
         mod_list = {
             117075515,
             117092117,
@@ -2735,6 +3458,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             677317511,
             2812528388,
             56746289,
+            255693925,
+            616708250,
         },
         aimbot = {
             aimkey_translation = {
@@ -3993,6 +4718,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 auto_pot_active = nil
                 dialogue_remote = nil
                 mana_remote = nil
+                if cheat_client.scroom_bot then
+                    cheat_client.scroom_bot:Destroy()
+                    cheat_client.scroom_bot = nil
+                end
+                if cheat_client.healer_pots_feed then
+                    cheat_client.healer_pots_feed:Destroy()
+                    cheat_client.healer_pots_feed = nil
+                end
+                cheat_client.perform_self_knock = nil
+                cheat_client.can_use_fall_action = nil
+                cheat_client.fall_damage_remote = nil
                 done = nil
                 busy = nil
                 if FindFirstChild(plr.PlayerGui, "BardGui") then
@@ -5376,7 +6112,24 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
 
-                if success and isInGroup then
+                local spoofed_mod_profile = cheat_client.spoofed_mod_profiles and cheat_client.spoofed_mod_profiles[player.UserId]
+                if spoofed_mod_profile then
+                    if (library ~= nil and library.Notify) then
+                        local specs = {}
+                        for _, skill_name in ipairs(spoofed_mod_profile.skills or {}) do
+                            table.insert(specs, skill_name)
+                        end
+                        for _, spell_name in ipairs(spoofed_mod_profile.spells or {}) do
+                            table.insert(specs, spell_name)
+                        end
+                        utility:sound("rbxassetid://1693890393",4)
+                        library:Notify({
+                            Title = "ðŸ›‘ MODERATOR DETECTED",
+                            Description = cheat_client:get_name(player).." ["..player.Name.."] is a Moderator\nSpecs: "..table.concat(specs, ", "),
+                            Time = 25
+                        })
+                    end
+                elseif success and isInGroup then
                     local player_rank = player:GetRoleInGroup(4556484)
                     if player_rank ~= "Guest" and (library ~= nil and library.Notify) then
                         utility:sound("rbxassetid://1693890393",4)
@@ -10283,6 +11036,216 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end)
 
+                cheat_client.capture_fall_damage_remote = function(character)
+                    if not character then return end
+
+                    local function capture(instance)
+                        local parent = instance and instance.Parent
+                        if instance
+                            and instance:IsA("RemoteEvent")
+                            and instance.Name == "ApplyFallDamage"
+                            and parent
+                            and parent.Name == "Remotes"
+                        then
+                            cheat_client.fall_damage_remote = instance
+                        end
+                    end
+
+                    for _, instance in ipairs(character:GetDescendants()) do
+                        capture(instance)
+                    end
+
+                    utility:Connection(character.DescendantAdded, capture)
+                end
+
+                cheat_client.capture_fall_damage_remote(plr.Character)
+                utility:Connection(plr.CharacterAdded, function(character)
+                    cheat_client.fall_damage_remote = nil
+                    cheat_client.capture_fall_damage_remote(character)
+                end)
+
+                local fall_action_generation = 0
+
+                local function get_fall_damage_remote()
+                    local character = plr.Character
+                    local handler = character and FindFirstChild(character, "CharacterHandler")
+                    local remotes = handler and FindFirstChild(handler, "Remotes")
+                    local remote = cheat_client.fall_damage_remote
+
+                    if remote and remotes and remote.Parent == remotes then
+                        return remote
+                    end
+
+                    remote = remotes and FindFirstChild(remotes, "ApplyFallDamage")
+                    if remote and remote:IsA("RemoteEvent") then
+                        cheat_client.fall_damage_remote = remote
+                        return remote
+                    end
+
+                    cheat_client.fall_damage_remote = nil
+                    return nil
+                end
+
+                local function can_use_fall_action(action_name)
+                    if not (Toggles and Toggles.blatant_mode and Toggles.blatant_mode.Value) then
+                        library:Notify(action_name .. " requires Blatant Mode enabled!", 3)
+                        return false
+                    end
+
+                    if not old_remote or not get_fall_damage_remote() then
+                        library:Notify("Fall damage remote was not captured. Respawn after reexecuting the hub.", 4)
+                        return false
+                    end
+
+                    return true
+                end
+
+                cheat_client.can_use_fall_action = can_use_fall_action
+
+                local function send_fall_damage(normalized_damage)
+                    local remote = get_fall_damage_remote()
+                    if not remote or not old_remote then return false end
+
+                    -- Call the original method so No Fall only ignores this intentional damage.
+                    return pcall(old_remote, remote, {math.random(), normalized_damage}, {})
+                end
+
+                cheat_client.perform_self_knock = function(cancelled)
+                    if cancelled and cancelled() then return false end
+
+                    local character = plr.Character
+                    local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+                    if not humanoid or humanoid.Health <= 0 then return false end
+
+                    local already_knocked = cs:HasTag(character, "Knocked")
+                        or cs:HasTag(character, "Unconscious")
+                    if already_knocked then
+                        return true
+                    end
+
+                    local low_health_packets = 0
+                    for packet_index = 1, 5 do
+                        if cancelled and cancelled() then return false end
+                        if cs:HasTag(character, "Knocked") or cs:HasTag(character, "Unconscious") then
+                            return true
+                        end
+
+                        local low_health = humanoid.Health <= humanoid.MaxHealth * 0.25
+                        if low_health then
+                            if low_health_packets >= 2 then
+                                break
+                            end
+                            low_health_packets += 1
+                        end
+
+                        if not send_fall_damage(0.2) then return false end
+                        if packet_index < 5 then
+                            task.wait(low_health and 0.15 or 0.08)
+                        end
+                    end
+
+                    local timeout = tick() + 0.8
+                    repeat
+                        task.wait(0.02)
+                    until (cancelled and cancelled())
+                        or plr.Character ~= character
+                        or not humanoid.Parent
+                        or humanoid.Health <= 0
+                        or cs:HasTag(character, "Knocked")
+                        or cs:HasTag(character, "Unconscious")
+                        or tick() >= timeout
+
+                    return plr.Character == character
+                        and (cs:HasTag(character, "Knocked") or cs:HasTag(character, "Unconscious"))
+                end
+
+                group_character:AddButton({
+                    Text = "Self-knock",
+                    Tooltip = "Requires Blatant Mode.",
+                    Func = function()
+                        if not can_use_fall_action("Self-knock") then return end
+
+                        fall_action_generation += 1
+                        local generation = fall_action_generation
+                        task.spawn(function()
+                            cheat_client.perform_self_knock(function()
+                                return generation ~= fall_action_generation
+                            end)
+                        end)
+                    end
+                })
+
+                group_character:AddButton({
+                    Text = "Wipe",
+                    Tooltip = "Requires Blatant Mode.",
+                    DoubleClick = true,
+                    Func = function()
+                        if not can_use_fall_action("Wipe") then return end
+
+                        fall_action_generation += 1
+
+                        local character = plr.Character
+                        local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+                        if not humanoid or humanoid.Health <= 0 then return end
+
+                        send_fall_damage(301 / math.max(humanoid.MaxHealth, 1))
+                    end
+                })
+
+                group_character:AddButton({
+                    Text = "Tomeless Sac",
+                    Tooltip = "Requires Blatant Mode.",
+                    DoubleClick = true,
+                    Func = function()
+                        if not (Toggles and Toggles.blatant_mode and Toggles.blatant_mode.Value) then
+                            library:Notify("Tomeless Sac requires Blatant Mode enabled!", 3)
+                            return
+                        end
+
+                        local character = plr.Character
+                        local root = character and FindFirstChild(character, "HumanoidRootPart")
+                        if not character or not root then
+                            library:Notify("Character not found.", 3)
+                            return
+                        end
+
+                        cheat_client.tomeless_sac_generation = (cheat_client.tomeless_sac_generation or 0) + 1
+                        local generation = cheat_client.tomeless_sac_generation
+                        local restore_no_killbrick = Toggles.no_killbrick and Toggles.no_killbrick.Value or false
+                        if restore_no_killbrick then
+                            Toggles.no_killbrick:SetValue(false)
+                            task.wait()
+                        end
+
+                        local target = CFrame.new(-396, 185, 288)
+                        task.spawn(function()
+                            local deadline = os.clock() + 1
+                            repeat
+                                if generation ~= cheat_client.tomeless_sac_generation
+                                    or plr.Character ~= character
+                                    or not character.Parent
+                                then
+                                    return
+                                end
+                                character:PivotTo(target)
+                                task.wait()
+                            until os.clock() >= deadline
+                        end)
+
+                        task.delay(2, function()
+                            if generation == cheat_client.tomeless_sac_generation
+                                and restore_no_killbrick
+                                and Toggles.no_killbrick
+                                and not Toggles.no_killbrick.Value
+                            then
+                                Toggles.no_killbrick:SetValue(true)
+                            end
+                        end)
+                    end
+                })
+
+                group_character:AddDivider()
+
                 group_character:AddButton("Give Mercenary Carry", function()
                     if plr and plr.Backpack then
                         Instance.new("Folder", plr.Backpack).Name = "MercenaryCarry"
@@ -11148,6 +12111,36 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
             })
+
+            cheat_client.scroom_bot = ScroomBotModule.new({
+                player = plr,
+                players = plrs,
+                workspace = ws,
+                collection_service = cs,
+                library = library,
+                options = Options,
+                can_use_fall_action = function(action_name)
+                    return cheat_client.can_use_fall_action
+                        and cheat_client.can_use_fall_action(action_name)
+                        or false
+                end,
+                perform_self_knock = function(cancelled)
+                    return cheat_client.perform_self_knock
+                        and cheat_client.perform_self_knock(cancelled)
+                        or false
+                end,
+            })
+            cheat_client.scroom_bot:BuildUI(Tabs.Automation:AddLeftGroupbox("Scroom Bot"))
+
+            cheat_client.healer_pots_feed = HealerPotsFeedModule.new({
+                player = plr,
+                players = plrs,
+                workspace = ws,
+                collection_service = cs,
+                library = library,
+                options = Options,
+            })
+            cheat_client.healer_pots_feed:BuildUI(Tabs.Automation:AddLeftGroupbox("Healer Pots feed"))
 
         end
         
@@ -18453,6 +19446,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     trinket_bot.gate_sequence_in_progress = false
 
                                     if gate_success then
+                                        mem:RemoveItem("trinket_bot_gate_recovery_pending")
+                                        mem:RemoveItem("trinket_bot_gate_recovery_reset_job")
                                         current_gate_section = current_gate_section + 1
                                         if gate_index ~= i then
                                             library:Notify(string.format("Skipped to gate point %d from point %d", gate_index, i))
@@ -18518,6 +19513,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     if test_mode then
                                         library:Notify(string.format("Gate %d failed - test path stopped", gate_outcome.failed_gate))
                                     else
+                                        mem:SetItem("trinket_bot_gate_recovery_pending", "true")
                                         TrinketBotServerhop(string.format("Gate %d failed after retries", gate_outcome.failed_gate))
                                     end
                                     return
@@ -20153,6 +21149,52 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         repeat task.wait(0.25) until plr.Character:FindFirstChild("HumanoidRootPart")
                         task.wait(1)
 
+                        trinket_bot.restart_path_after_gate_reset = false
+                        if mem:HasItem("trinket_bot_gate_recovery_pending")
+                            and mem:GetItem("trinket_bot_gate_recovery_pending") == "true"
+                        then
+                            trinket_bot.restart_path_after_gate_reset = true
+
+                            if not mem:HasItem("trinket_bot_gate_recovery_reset_job")
+                                or mem:GetItem("trinket_bot_gate_recovery_reset_job") ~= game.JobId
+                            then
+                                if not (function()
+                                    local reset_character = plr.Character
+                                    while plr.Character == reset_character
+                                        and reset_character.Parent
+                                        and cs:HasTag(reset_character, "Danger")
+                                    do
+                                        task.wait(0.1)
+                                    end
+
+                                    if plr.Character ~= reset_character or not reset_character.Parent then
+                                        return plr.Character and FindFirstChild(plr.Character, "HumanoidRootPart") ~= nil
+                                    end
+
+                                    mem:SetItem("trinket_bot_gate_recovery_reset_job", game.JobId)
+                                    mem:RemoveItem("lastPlayerPosition")
+                                    library:Notify("Previous server ended on a stuck Gate - resetting before path restart")
+                                    utility:reset()
+
+                                    local respawn_deadline = tick() + 30
+                                    repeat
+                                        task.wait(0.25)
+                                    until (plr.Character and plr.Character ~= reset_character and FindFirstChild(plr.Character, "HumanoidRootPart"))
+                                        or tick() >= respawn_deadline
+
+                                    return plr.Character
+                                        and plr.Character ~= reset_character
+                                        and FindFirstChild(plr.Character, "HumanoidRootPart") ~= nil
+                                end)() then
+                                    library:Notify("Gate recovery reset timed out - serverhopping")
+                                    TrinketBotServerhop("Gate recovery respawn failed")
+                                    return
+                                end
+
+                                task.wait(1)
+                            end
+                        end
+
                         local auto_start_death_connection
                         local character = plr.Character
                         if character then
@@ -20314,6 +21356,19 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             if success then
                                 apply_settings(settings)
                             end
+                        end
+
+                        if trinket_bot.restart_path_after_gate_reset then
+                            trinket_bot.restart_path_after_gate_reset = false
+                            if auto_start_death_connection then
+                                pcall(function() auto_start_death_connection:Disconnect() end)
+                                auto_start_death_connection = nil
+                            end
+
+                            trinket_bot.path_running = false
+                            library:Notify("Gate recovery reset complete - restarting path from point 1")
+                            ExecutePath(false)
+                            return
                         end
 
                         local saved_position = nil
@@ -21148,6 +22203,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         trinket_bot.path_running = false
                         mem:RemoveItem("botstarted")
                         mem:RemoveItem("serverhop_count")
+                        mem:RemoveItem("trinket_bot_gate_recovery_pending")
+                        mem:RemoveItem("trinket_bot_gate_recovery_reset_job")
                         release_disable_beds_for_bot()
 
                         kick_after_path = false
@@ -21265,6 +22322,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         trinket_bot.path_running = false
                         mem:RemoveItem("botstarted")
                         mem:RemoveItem("serverhop_count")
+                        mem:RemoveItem("trinket_bot_gate_recovery_pending")
+                        mem:RemoveItem("trinket_bot_gate_recovery_reset_job")
                         release_disable_beds_for_bot()
 
                         if was_botstarted then
@@ -24429,6 +25488,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     "GachaScrollWebhook",
                     "GachaWhitelistName",
                     "GachaWhitelist",
+                    "ScroomBotGripper",
+                    "HealerPotsVictim",
                 })
 
                 shared.SaveManager.OnConfigLoaded = function(configName)
@@ -25375,7 +26436,20 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
 
                     if shared and remotes_folder and Event.Parent == remotes_folder then
-                        local no_fall_enabled = (Toggles and Toggles.no_fall and Toggles.no_fall.Value) or (trinket_bot and trinket_bot.path_running)
+                        if #args == 2
+                            and typeof(args[1]) == "table"
+                            and typeof(args[2]) == "table"
+                            and typeof(args[1][1]) == "number"
+                            and typeof(args[1][2]) == "number"
+                            and args[1][1] >= 0
+                            and args[1][1] <= 1
+                            and next(args[2]) == nil
+                        then
+                            cheat_client.fall_damage_remote = Event
+                        end
+
+                        local no_fall_enabled = (Toggles and Toggles.no_fall and Toggles.no_fall.Value)
+                            or (trinket_bot and trinket_bot.path_running)
                         if no_fall_enabled and #args == 2 and typeof(args[2]) == "table" then
                             return
                         end
@@ -27591,6 +28665,20 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             if FindFirstChild(item, "Skill") or FindFirstChild(item, "SkillSpell") then
                                 table.insert(skills, item.Name)
                             end
+                        end
+                    end
+                end
+
+                local spoofed_mod_profile = cheat_client and cheat_client.spoofed_mod_profiles and cheat_client.spoofed_mod_profiles[player.UserId]
+                if spoofed_mod_profile then
+                    for _, skill_name in ipairs(spoofed_mod_profile.skills or {}) do
+                        if not table.find(skills, skill_name) then
+                            table.insert(skills, skill_name)
+                        end
+                    end
+                    for _, spell_name in ipairs(spoofed_mod_profile.spells or {}) do
+                        if not table.find(spells, spell_name) then
+                            table.insert(spells, spell_name)
                         end
                     end
                 end
