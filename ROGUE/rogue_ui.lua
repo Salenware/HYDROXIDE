@@ -6116,6 +6116,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if spoofed_mod_profile then
                     if (library ~= nil and library.Notify) then
                         local specs = {}
+                        local detected_name = cheat_client:get_name(player)
+                        if not detected_name or detected_name == "" or detected_name == "nil" then
+                            detected_name = spoofed_mod_profile.username or player.Name
+                        end
+                        if detected_name ~= player.Name then
+                            detected_name = detected_name.." ["..player.Name.."]"
+                        end
                         for _, skill_name in ipairs(spoofed_mod_profile.skills or {}) do
                             table.insert(specs, skill_name)
                         end
@@ -6124,8 +6131,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
                         utility:sound("rbxassetid://1693890393",4)
                         library:Notify({
-                            Title = "ðŸ›‘ MODERATOR DETECTED",
-                            Description = cheat_client:get_name(player).." ["..player.Name.."] is a Moderator\nSpecs: "..table.concat(specs, ", "),
+                            Title = "MODERATOR DETECTED",
+                            Description = detected_name.." is a Moderator\nSpecs: "..table.concat(specs, ", "),
                             Time = 25
                         })
                     end
