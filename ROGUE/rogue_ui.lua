@@ -5691,7 +5691,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             warn("[SERVERHOP FALLBACK] No non-full servers available at all")
                         end
 
-                        utility:plain_webhook("@here SERVERHOP FAILED: All servers full or unavailable after 24 attempts. Kicking bot. if this happens dm zyu")
+                        utility:plain_webhook("SERVERHOP FAILED: All servers full or unavailable after 24 attempts. Kicking bot. if this happens dm zyu")
                         task.wait(0.5)
                         plr:Kick("Serverhop failed, dm zyu if this occurs [1]")
                     else
@@ -11043,35 +11043,36 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end)
 
-                cheat_client.capture_fall_damage_remote = function(character)
-                    if not character then return end
+                if game.PlaceId == 5208655184 then
+                    cheat_client.capture_fall_damage_remote = function(character)
+                        if not character then return end
 
-                    local function capture(instance)
-                        local parent = instance and instance.Parent
-                        if instance
-                            and instance:IsA("RemoteEvent")
-                            and instance.Name == "ApplyFallDamage"
-                            and parent
-                            and parent.Name == "Remotes"
-                        then
-                            cheat_client.fall_damage_remote = instance
+                        local function capture(instance)
+                            local parent = instance and instance.Parent
+                            if instance
+                                and instance:IsA("RemoteEvent")
+                                and instance.Name == "ApplyFallDamage"
+                                and parent
+                                and parent.Name == "Remotes"
+                            then
+                                cheat_client.fall_damage_remote = instance
+                            end
                         end
+
+                        for _, instance in ipairs(character:GetDescendants()) do
+                            capture(instance)
+                        end
+
+                        utility:Connection(character.DescendantAdded, capture)
                     end
 
-                    for _, instance in ipairs(character:GetDescendants()) do
-                        capture(instance)
-                    end
+                    cheat_client.capture_fall_damage_remote(plr.Character)
+                    utility:Connection(plr.CharacterAdded, function(character)
+                        cheat_client.fall_damage_remote = nil
+                        cheat_client.capture_fall_damage_remote(character)
+                    end)
 
-                    utility:Connection(character.DescendantAdded, capture)
-                end
-
-                cheat_client.capture_fall_damage_remote(plr.Character)
-                utility:Connection(plr.CharacterAdded, function(character)
-                    cheat_client.fall_damage_remote = nil
-                    cheat_client.capture_fall_damage_remote(character)
-                end)
-
-                local fall_action_generation = 0
+                    local fall_action_generation = 0
 
                 local function get_fall_damage_remote()
                     local character = plr.Character
@@ -11182,28 +11183,30 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 })
 
-                group_character:AddButton({
-                    Text = "Wipe",
-                    Tooltip = "Requires Blatant Mode.",
-                    DoubleClick = true,
-                    Func = function()
-                        if not can_use_fall_action("Wipe") then return end
+                    group_character:AddButton({
+                        Text = "Wipe",
+                        Tooltip = "Requires Blatant Mode.",
+                        DoubleClick = true,
+                        Func = function()
+                            if not can_use_fall_action("Wipe") then return end
 
-                        fall_action_generation += 1
+                            fall_action_generation += 1
 
-                        local character = plr.Character
-                        local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
-                        if not humanoid or humanoid.Health <= 0 then return end
+                            local character = plr.Character
+                            local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+                            if not humanoid or humanoid.Health <= 0 then return end
 
-                        send_fall_damage(301 / math.max(humanoid.MaxHealth, 1))
-                    end
-                })
+                            send_fall_damage(301 / math.max(humanoid.MaxHealth, 1))
+                        end
+                    })
+                end
 
-                group_character:AddButton({
-                    Text = "Tomeless Sac",
-                    Tooltip = "Requires Blatant Mode.",
-                    DoubleClick = true,
-                    Func = function()
+                if game.PlaceId == 5208655184 then
+                    group_character:AddButton({
+                        Text = "Tomeless Sac",
+                        Tooltip = "Requires Blatant Mode.",
+                        DoubleClick = true,
+                        Func = function()
                         if not (Toggles and Toggles.blatant_mode and Toggles.blatant_mode.Value) then
                             library:Notify("Tomeless Sac requires Blatant Mode enabled!", 3)
                             return
@@ -11248,8 +11251,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 Toggles.no_killbrick:SetValue(true)
                             end
                         end)
-                    end
-                })
+                        end
+                    })
+                end
 
                 group_character:AddDivider()
 
@@ -12119,25 +12123,27 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             })
 
-            cheat_client.scroom_bot = ScroomBotModule.new({
-                player = plr,
-                players = plrs,
-                workspace = ws,
-                collection_service = cs,
-                library = library,
-                options = Options,
-                can_use_fall_action = function(action_name)
-                    return cheat_client.can_use_fall_action
-                        and cheat_client.can_use_fall_action(action_name)
-                        or false
-                end,
-                perform_self_knock = function(cancelled)
-                    return cheat_client.perform_self_knock
-                        and cheat_client.perform_self_knock(cancelled)
-                        or false
-                end,
-            })
-            cheat_client.scroom_bot:BuildUI(Tabs.Automation:AddLeftGroupbox("Scroom Bot"))
+            if game.PlaceId == 5208655184 then
+                cheat_client.scroom_bot = ScroomBotModule.new({
+                    player = plr,
+                    players = plrs,
+                    workspace = ws,
+                    collection_service = cs,
+                    library = library,
+                    options = Options,
+                    can_use_fall_action = function(action_name)
+                        return cheat_client.can_use_fall_action
+                            and cheat_client.can_use_fall_action(action_name)
+                            or false
+                    end,
+                    perform_self_knock = function(cancelled)
+                        return cheat_client.perform_self_knock
+                            and cheat_client.perform_self_knock(cancelled)
+                            or false
+                    end,
+                })
+                cheat_client.scroom_bot:BuildUI(Tabs.Automation:AddLeftGroupbox("Scroom Bot"))
+            end
 
             cheat_client.healer_pots_feed = HealerPotsFeedModule.new({
                 player = plr,
@@ -17032,7 +17038,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if not serverhop_success then
                     library:Notify("!! SERVERHOP FAILED - retrying... !!")
                     if utility then
-                        utility:plain_webhook("@here SERVERHOP FAILED - retrying serverhop...")
+                        utility:plain_webhook("SERVERHOP FAILED - retrying serverhop...")
                     end
 
                     pcall(function()
@@ -17046,7 +17052,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                         if character and cs:HasTag(character, "Danger") then
                             library:Notify("!! SERVERHOP FAILED - In combat, waiting for danger to clear !!")
-                            utility:plain_webhook("@here SERVERHOP FAILED - In combat, waiting for danger to clear then retrying")
+                            utility:plain_webhook("SERVERHOP FAILED - In combat, waiting for danger to clear then retrying")
 
                             local danger_cleared = false
                             local danger_connection
@@ -17076,7 +17082,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             local final_serverhop = utility:Serverhop()
                             if not final_serverhop then
                                 library:Notify("!! SERVERHOP STILL FAILED after danger cleared - retrying forever !!")
-                                utility:plain_webhook("@here SERVERHOP FAILED even after danger cleared - retrying forever")
+                                utility:plain_webhook("SERVERHOP FAILED even after danger cleared - retrying forever")
                                 retry_serverhop_forever("failed after danger cleared")
                             end
                             return
@@ -17084,7 +17090,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                         library:Notify("!! SERVERHOP RETRY FAILED - retrying forever !!")
                         if utility then
-                            utility:plain_webhook("@here SERVERHOP RETRY FAILED - retrying forever")
+                            utility:plain_webhook("SERVERHOP RETRY FAILED - retrying forever")
                         end
                         retry_serverhop_forever("retry failed")
                     end
@@ -26443,7 +26449,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
 
                     if shared and remotes_folder and Event.Parent == remotes_folder then
-                        if #args == 2
+                        if game.PlaceId == 5208655184
+                            and #args == 2
                             and typeof(args[1]) == "table"
                             and typeof(args[2]) == "table"
                             and typeof(args[1][1]) == "number"
