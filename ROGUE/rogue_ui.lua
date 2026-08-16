@@ -11129,30 +11129,19 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
                     if not humanoid or humanoid.Health <= 0 then return false end
 
-                    local already_knocked = cs:HasTag(character, "Knocked")
-                        or cs:HasTag(character, "Unconscious")
-                    if already_knocked then
+                    if cs:HasTag(character, "Knocked") then
                         return true
                     end
 
-                    local low_health_packets = 0
-                    for packet_index = 1, 5 do
+                    for packet_index = 1, 6 do
                         if cancelled and cancelled() then return false end
-                        if cs:HasTag(character, "Knocked") or cs:HasTag(character, "Unconscious") then
+                        if cs:HasTag(character, "Knocked") then
                             return true
                         end
 
-                        local low_health = humanoid.Health <= humanoid.MaxHealth * 0.25
-                        if low_health then
-                            if low_health_packets >= 2 then
-                                break
-                            end
-                            low_health_packets += 1
-                        end
-
                         if not send_fall_damage(0.2) then return false end
-                        if packet_index < 5 then
-                            task.wait(low_health and 0.15 or 0.08)
+                        if packet_index < 6 then
+                            task.wait(0.1)
                         end
                     end
 
