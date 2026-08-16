@@ -9444,7 +9444,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end;
             
     
-            local function addItemsToStation(items, station, part, partToClick, partToClean)
+            local function addItemsToStation(items, station, part, partToClick, partToClean, concoctDelay)
                 if(station.Contents.Value ~= '[]') then
                     repeat
                         fireclickdetector(station[partToClean].ClickEmpty);
@@ -9503,7 +9503,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end;
                     end;
                 end;
-            
+
+                if concoctDelay and concoctDelay > 0 then
+                    task.wait(concoctDelay)
+                end
+
                 repeat
                     fireclickdetector(station[partToClick].ClickConcoct);
                     task.wait(utility:random_wait(true))
@@ -9544,7 +9548,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if (stationType == 'Alchemy') then
                     repeat
                         if not auto_pot_active then return false end
-                        addItemsToStation(items, station, 'Water', 'Ladle', 'Bucket');
+                        addItemsToStation(items, station, 'Water', 'Ladle', 'Bucket', 0.5);
                         items = hasMaterials(stationType == 'Alchemy' and potions or swords, itemToCraft);
 
                         if cheat_client and cheat_client.config and cheat_client.config.auto_craft_delay then
@@ -18154,6 +18158,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 local ice_dragon_skip_index = nil
                 local shrieker_detected_at_point = nil
                 local kick_gate_handled = false
+                trinket_bot.kick_danger_safe_point_index = nil
 
                 local function detect_shrieker_near_position(position, radius)
                     radius = radius or 150
@@ -18642,55 +18647,69 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
 
                     if kick_after_path and not kick_gate_handled then
-                        local last_gate_index = nil
-                        for j = #trinket_bot.path_points, 1, -1 do
-                            if trinket_bot.path_points[j].is_gate_point then
-                                last_gate_index = j
-                                break
-                            end
-                        end
-
-                        if last_gate_index and i < last_gate_index then
-                            library:Notify(string.format("%s found - gating to last gate point %d", kick_trinket_name, last_gate_index))
-
-                            local stabilization_platform = nil
-                            if plr.Character and FindFirstChild(plr.Character, "HumanoidRootPart") then
-                                local humanoid = FindFirstChildOfClass(plr.Character, "Humanoid")
-                                local is_in_air = humanoid and (humanoid:GetState() == Enum.HumanoidStateType.Freefall or humanoid:GetState() == Enum.HumanoidStateType.Flying)
-
-                                if is_in_air then
-                                    local hrp = plr.Character.HumanoidRootPart
-                                    stabilization_platform = Instance.new("Part")
-                                    stabilization_platform.Size = Vector3.new(10, 1, 10)
-                                    stabilization_platform.Position = hrp.Position - Vector3.new(0, 5, 0)
-                                    stabilization_platform.Anchored = true
-                                    stabilization_platform.CanCollide = true
-                                    stabilization_platform.Transparency = 1
-                                    stabilization_platform.Parent = workspace
-                                    task.wait(0.3)
+                        if trinket_bot.kick_danger_safe_point_index == i then
+                            -- Reach the next recorded path point before attempting the artifact exit gate.
+                        elseif plr.Character and cs:HasTag(plr.Character, "Danger") then
+                            trinket_bot.kick_danger_safe_point_index = i
+                            library:Notify(string.format(
+                                "%s found while in Danger - moving to safe path point %d before final gate",
+                                kick_trinket_name,
+                                i
+                            ))
+                        else
+                            local last_gate_index = nil
+                            for j = #trinket_bot.path_points, 1, -1 do
+                                if trinket_bot.path_points[j].is_gate_point then
+                                    last_gate_index = j
+                                    break
                                 end
                             end
 
-                            local gate_success = Gate(
-                                trinket_bot.path_points[last_gate_index].gate_location,
-                                trinket_bot.path_points[last_gate_index + 1] and trinket_bot.path_points[last_gate_index + 1].position or nil
-                            )
-                            if stabilization_platform then
-                                stabilization_platform:Destroy()
-                                stabilization_platform = nil
-                            end
+                            if last_gate_index and i < last_gate_index then
+                                library:Notify(string.format("%s found - gating to last gate point %d", kick_trinket_name, last_gate_index))
 
-                            if gate_success then
-                                library:Notify(string.format("Gated to last gate point %d - continuing to end then kicking", last_gate_index))
-                                i = last_gate_index + 1
-                                kick_gate_handled = true
-                                continue
+                                local stabilization_platform = nil
+                                if plr.Character and FindFirstChild(plr.Character, "HumanoidRootPart") then
+                                    local humanoid = FindFirstChildOfClass(plr.Character, "Humanoid")
+                                    local is_in_air = humanoid and (humanoid:GetState() == Enum.HumanoidStateType.Freefall or humanoid:GetState() == Enum.HumanoidStateType.Flying)
+
+                                    if is_in_air then
+                                        local hrp = plr.Character.HumanoidRootPart
+                                        stabilization_platform = Instance.new("Part")
+                                        stabilization_platform.Size = Vector3.new(10, 1, 10)
+                                        stabilization_platform.Position = hrp.Position - Vector3.new(0, 5, 0)
+                                        stabilization_platform.Anchored = true
+                                        stabilization_platform.CanCollide = true
+                                        stabilization_platform.Transparency = 1
+                                        stabilization_platform.Parent = workspace
+                                        task.wait(0.3)
+                                    end
+                                end
+
+                                local gate_success = Gate(
+                                    trinket_bot.path_points[last_gate_index].gate_location,
+                                    trinket_bot.path_points[last_gate_index + 1] and trinket_bot.path_points[last_gate_index + 1].position or nil
+                                )
+                                if stabilization_platform then
+                                    stabilization_platform:Destroy()
+                                    stabilization_platform = nil
+                                end
+
+                                if gate_success then
+                                    library:Notify(string.format("Gated to last gate point %d - continuing to end then kicking", last_gate_index))
+                                    i = last_gate_index + 1
+                                    kick_gate_handled = true
+                                    continue
+                                elseif plr.Character and cs:HasTag(plr.Character, "Danger") then
+                                    trinket_bot.kick_danger_safe_point_index = i
+                                    library:Notify("Final gate interrupted by Danger - moving to the next path point before retrying")
+                                else
+                                    library:Notify("Gate to last point failed - continuing path normally")
+                                    kick_gate_handled = true
+                                end
                             else
-                                library:Notify("Gate to last point failed - continuing path normally")
                                 kick_gate_handled = true
                             end
-                        else
-                            kick_gate_handled = true
                         end
                     end
 
@@ -19296,7 +19315,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
                     end
 
-                    if point.is_gate_point then
+                    if point.is_gate_point and trinket_bot.kick_danger_safe_point_index ~= i then
                         local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
                         local gate_success = false
                         local gate_outcome = {
@@ -20163,6 +20182,29 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 return
                             end
                         end
+                    end
+
+                    if kick_after_path and trinket_bot.kick_danger_safe_point_index == i then
+                        library:Notify(string.format(
+                            "Reached safe path point %d - waiting for Danger to clear before final gate",
+                            i
+                        ))
+
+                        while trinket_bot.path_running
+                            and not shared.is_unloading
+                            and plr.Character
+                            and cs:HasTag(plr.Character, "Danger")
+                        do
+                            task.wait(0.1)
+                        end
+
+                        if not trinket_bot.path_running or shared.is_unloading or not plr.Character then
+                            return
+                        end
+
+                        trinket_bot.kick_danger_safe_point_index = nil
+                        library:Notify("Danger cleared at safe path point - gating to final point")
+                        continue
                     end
 
                     i = i + 1
@@ -26724,7 +26766,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 
                                 if not cheat_client.custom_flight_functions["GetFocusedTextBox"](uis) then
                                     local eVector = Vector3.new()
-                                    local rVector, lVector, uVector = camCFrame.RightVector, camCFrame.LookVector, camCFrame.UpVector
+                                    local rVector = camCFrame.RightVector
+                                    local lVector = camCFrame.LookVector
+                                    local worldUp = Vector3.new(0, 1, 0)
 
                                     local flatLVector = Vector3.new(lVector.X, 0, lVector.Z)
                                     if flatLVector.Magnitude > 0.01 then
@@ -26740,8 +26784,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     if cheat_client.custom_flight_functions["IsKeyDown"](uis, "A") then eVector -= flatRVector end
                                     
                                     local isHoldingSpace = cheat_client.custom_flight_functions["IsKeyDown"](uis, "Space")
-                                    if isHoldingSpace then eVector += uVector end
-                                    if cheat_client.custom_flight_functions["IsKeyDown"](uis, "LeftControl") then eVector -= uVector end
+                                    if isHoldingSpace then eVector += worldUp end
+                                    if cheat_client.custom_flight_functions["IsKeyDown"](uis, "LeftControl") then eVector -= worldUp end
                                     
                                     local isInAir = huma and huma.FloorMaterial == Enum.Material.Air
                                     local isInWater = huma and (huma:GetState() == Enum.HumanoidStateType.Swimming or huma:GetState() == Enum.HumanoidStateType.PlatformStanding and huma.FloorMaterial == Enum.Material.Water)
@@ -29700,13 +29744,18 @@ end
             local BATCH_DELAY = 0.25
 
             utility:Connection(ws.ChildAdded, function(object)
+                local client = cheat_client
+                if not shared or shared.is_unloading or not client or type(client.identify_trinket) ~= "function" then
+                    return
+                end
+
                 if object.Name == "Part" and FindFirstChild(object, "ID") then
                     if auto_trinket_enabled then
                         trinkets[#trinkets + 1] = object
                     end
 
-                    local trinket_name, trinket_color, trinket_zindex = cheat_client:identify_trinket(object)
-                    if trinket_color == cheat_client.trinket_colors.artifact.Color or trinket_color == cheat_client.trinket_colors.mythic.Color then
+                    local trinket_name, trinket_color, trinket_zindex = client:identify_trinket(object)
+                    if trinket_color == client.trinket_colors.artifact.Color or trinket_color == client.trinket_colors.mythic.Color then
                         table.insert(artifact_batch, {
                             name = trinket_name,
                             object = object
@@ -29978,7 +30027,10 @@ end
                 end
 
                 cheat_client.feature_connections.auto_trinket = utility:Connection(rs.Heartbeat, LPH_NO_VIRTUALIZE(function(delta_time)
-                    if not plr.Character then return end
+                    local client = cheat_client
+                    if not shared or shared.is_unloading or not client or type(client.identify_trinket) ~= "function" or not plr.Character then
+                        return
+                    end
 
                     for i = #trinkets, 1, -1 do
                         if not trinkets[i] or not trinkets[i].Parent then
@@ -29987,7 +30039,7 @@ end
                     end
 
                     for _, object in next, trinkets do
-                        local trinket_name = cheat_client:identify_trinket(object)
+                        local trinket_name = client:identify_trinket(object)
                         if trinket_name == "Azael Horn" then
                             continue
                         end
@@ -32063,6 +32115,7 @@ end
             -- SalenwareHub remote management bridge.
             -- Only the fixed commands in COMMAND_HANDLERS can be executed.
 
+            local environment = getgenv()
             if not game:IsLoaded() then
                 game.Loaded:Wait()
             end
@@ -32078,7 +32131,6 @@ end
             local StarterGui = game:GetService("StarterGui")
             local CoreGui = game:GetService("CoreGui")
 
-            local environment = getgenv()
             local player = Players.LocalPlayer
             local requestFunction = rawget(environment, "http_request")
                 or rawget(environment, "request")
