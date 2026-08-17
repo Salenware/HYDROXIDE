@@ -11012,9 +11012,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
     
             do
                 group_character:AddToggle("instant_mine", {
-                    Text = "Instant Mine",
+                    Text = "Instant Mine/Cook",
                     Default = cheat_client.config.instant_mine,
-                    Tooltip = "Need min 5 pickaxes",
+                    Tooltip = "Need min 5 pickaxes/Frying Pans",
                     Callback = function(value)
                         cheat_client.config.instant_mine = value
                     end
@@ -29435,15 +29435,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if chatcheck then return end
                 if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
                 if not (shared and Toggles and Toggles.instant_mine and Toggles.instant_mine.Value) then return end
-                if not (plr.Character and FindFirstChild(plr.Character, "Pickaxe")) then return end
+                if not (plr.Character and (FindFirstChild(plr.Character, "Pickaxe") or FindFirstChild(plr.Character, "Frying Pan"))) then return end
                 if not can_mine then return end
 
                 can_mine = false
                 plr.Character.Humanoid:UnequipTools()
                 for _,v in pairs(plr.Backpack:GetChildren()) do
-                     if v.Name == "Pickaxe" then
+                     if v.Name == "Pickaxe" or v.Name == "Frying Pan" then
                         plr.Character.Humanoid:EquipTool(v)
-                        for i = 1, 8 do
+                        for i = 1, 10 do
                             v:Activate();
                             plr.Character.Humanoid:UnequipTools()
                         end
