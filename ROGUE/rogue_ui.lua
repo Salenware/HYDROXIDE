@@ -3378,8 +3378,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         artifacts = {"Rift Gem", "Lannis's Amulet", "Amulet of the White King", "Scroll of Fimbulvetr", "Scroll of Percutiens", "Scroll of Hoppa", "Scroll of Snarvindur", "Scroll of Manus Dei", "Spider Cloak", "Night Stone", "Philosophers Stone", "Howler Friend", "Phoenix Down", "Azael Horn", "Mysterious Artifact", "Fairfrozen", "Phoenix Flower"},
         spec_skills = {"Eyes of Justice", "Justinian's Helm", "Speech", "Undying Justinian", "Handgun", "StaticField", "Chain Lightning", "Flying Mushroom God", "Flying Flower God", "Overgrowth", "Scroomflora", "Mind Read", "Domination Rune", "Bestowal", "Domination", "Despair", "Better Manus Dei", "Better Mori", "Maledicta Terra", "Terrible Scream", "FrostAura", "Ray of Frost", "Aculeor", "Infettare", "Sylvester's Cloak", "Jester's Trick", "Quick Stop", "Abyssbypass", "VeryCoolBard", "Snowball", "Time Halt", "Time Erase", "Jester's Ruse", "Jester's Scheme", "Wallet Swipe", "Epitaph", "Pondus", "Darkness"},
         spoofed_mod_profiles = {
-            [616708250] = {
-                username = "99_Purity",
+            [123456789] = {
+                username = "96_Purity",
                 skills = {"Snowball", "Time Halt", "Time Erase", "Jester's Ruse", "Jester's Scheme", "Wallet Swipe", "Epitaph"},
                 spells = {"Pondus"},
             },
@@ -6131,7 +6131,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
                         utility:sound("rbxassetid://1693890393",4)
                         library:Notify({
-                            Title = "MODERATOR DETECTED",
+                            Title = "🛑 MODERATOR DETECTED",
                             Description = detected_name.." is a Moderator\nSpecs: "..table.concat(specs, ", "),
                             Time = 25
                         })
