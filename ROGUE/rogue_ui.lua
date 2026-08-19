@@ -16498,7 +16498,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 local selected_mythics_artifacts = Options.PickupMythicsArtifacts and Options.PickupMythicsArtifacts.Value or {}
                 local pickup_trinkets = Toggles.PickupTrinkets and Toggles.PickupTrinkets.Value
                 local pickup_event_items = Toggles.PickupEventItems and Toggles.PickupEventItems.Value
-                local min_distance = 350
+                local min_distance = 500
 
                 for _, object in next, ws:GetChildren() do
                     if object.Name == "Part" and FindFirstChild(object, "ID") then
