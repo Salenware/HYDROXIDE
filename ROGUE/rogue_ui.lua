@@ -145,6 +145,7 @@ function GachaBot.new(context)
     self.tooFarSince = nil
     self.pendingMenuAt = nil
     self.pendingHopReason = nil
+    self.postGachaHoldUntil = 0
     self.camperElapsed = 0
     self.lastSafetyAt = os.clock()
     self.lastModScanAt = 0
@@ -768,6 +769,11 @@ function GachaBot:menuUntilSuccess(token, emergency)
     self.menuInProgress = true
     self.menuEmergencyRequested = emergency == true
     local ok, result = xpcall(function()
+        while self:isCurrent(token) and os.clock() < (self.postGachaHoldUntil or 0) do
+            self:setState("GACHA", "waiting for roll to settle")
+            task.wait(0.05)
+        end
+
         local emergencyMode = emergency == true
         self.action = "MENU"
         self:setState(emergencyMode and "FF EMERGENCY" or "MENU")
@@ -1233,7 +1239,10 @@ function GachaBot:performGacha(token, npc, clickDetector)
     local observedRoll = nil
     local backpack = self.player:FindFirstChildOfClass("Backpack")
     local childConnection = backpack and backpack.ChildAdded:Connect(function(item)
-        if isRollName(item.Name) then observedRoll = item.Name end
+        if isRollName(item.Name) then
+            observedRoll = item.Name
+            self.postGachaHoldUntil = math.max(self.postGachaHoldUntil or 0, os.clock() + 2)
+        end
     end) or nil
     local result = nil
     local activeRemote = nil
@@ -1243,7 +1252,12 @@ function GachaBot:performGacha(token, npc, clickDetector)
         if speaker and not lower(speaker):find("xenyari", 1, true) then return end
         activeRemote = remote
         local classified = self:classifyDialogue(data)
-        if classified then result = classified end
+        if classified then
+            result = classified
+            if classified == "SUCCESS" then
+                self.postGachaHoldUntil = math.max(self.postGachaHoldUntil or 0, os.clock() + 2)
+            end
+        end
         local choices = tableValueInsensitive(data, "choices")
         local selected = type(choices) == "table" and choices[1] or nil
         task.defer(function()
@@ -1481,7 +1495,7 @@ function GachaBot:forceFieldWatchdog(token)
     while self:isCurrent(token) do
         if not self:isSafeServerMode() then
             local character = self.player.Character
-            if character and not self:hasStartMenu() and not self:hasForceField(character) then
+            if character and self.action ~= "GACHA" and not self:hasStartMenu() and not self:hasForceField(character) then
                 self.menuEmergencyRequested = true
                 self:menuUntilSuccess(token, true)
             end
@@ -1566,6 +1580,7 @@ function GachaBot:Stop(userInitiated)
     self.running = false
     self.generation += 1
     self.action = nil
+    self.postGachaHoldUntil = 0
     self.pendingMenuAt = nil
     self.pendingHopReason = nil
     self:setState("OFF")
@@ -1830,11 +1845,13 @@ local ScroomBotModule = (function()
 local ScroomBot = {}
 ScroomBot.__index = ScroomBot
 
+local PathfindingService = game:GetService("PathfindingService")
 local PURGATORY_PATH = {
     Vector3.new(-7183.500, 274.759, 2796.500),
     Vector3.new(-7167.606, 274.759, 2771.491),
     Vector3.new(-7141.430, 274.759, 2771.280),
 }
+local SCROOM_KNOCK_RANGE = 4
 
 function ScroomBot.new(context)
     return setmetatable({
@@ -1941,7 +1958,73 @@ function ScroomBot:walkTo(generation, character, humanoid, root, target, timeout
     local deadline = os.clock() + (timeout or 20)
     tolerance = tolerance or 5
 
-    repeat
+    local function canContinue()
+        return self:isCurrent(generation)
+            and self.player.Character == character
+            and humanoid.Parent
+            and humanoid.Health > 0
+            and root.Parent
+    end
+
+    local function moveToWaypoint(waypoint)
+        local lastPosition = root.Position
+        local lastProgress = os.clock()
+        local waypointDeadline = math.min(deadline, os.clock() + 4)
+
+        if waypoint.Action == Enum.PathWaypointAction.Jump then
+            humanoid.Jump = true
+        end
+        humanoid:MoveTo(waypoint.Position)
+
+        repeat
+            task.wait(0.15)
+            if not canContinue() then
+                return false
+            end
+            if (root.Position - waypoint.Position).Magnitude <= 2.5 then
+                return true
+            end
+            if (root.Position - lastPosition).Magnitude >= 0.5 then
+                lastPosition = root.Position
+                lastProgress = os.clock()
+            elseif os.clock() - lastProgress >= 1.25 then
+                return false
+            end
+        until os.clock() >= waypointDeadline
+
+        return false
+    end
+
+    while canContinue() and os.clock() < deadline do
+        if (root.Position - target).Magnitude <= tolerance then
+            return true
+        end
+
+        local path = PathfindingService:CreatePath({
+            AgentRadius = 2,
+            AgentHeight = 5,
+            AgentCanJump = true,
+            WaypointSpacing = 3,
+        })
+        local computed = pcall(path.ComputeAsync, path, root.Position, target)
+        local waypoints = computed
+            and path.Status == Enum.PathStatus.Success
+            and path:GetWaypoints()
+
+        if waypoints and #waypoints > 1 then
+            for index = 2, #waypoints do
+                if not moveToWaypoint(waypoints[index]) then
+                    break
+                end
+                if (root.Position - target).Magnitude <= tolerance then
+                    return true
+                end
+            end
+        else
+            humanoid:MoveTo(target)
+            task.wait(0.35)
+        end
+
         if not self:isCurrent(generation)
             or self.player.Character ~= character
             or not humanoid.Parent
@@ -1950,9 +2033,7 @@ function ScroomBot:walkTo(generation, character, humanoid, root, target, timeout
         then
             return false
         end
-        humanoid:MoveTo(target)
-        task.wait(0.25)
-    until (root.Position - target).Magnitude <= tolerance or os.clock() >= deadline
+    end
 
     return (root.Position - target).Magnitude <= tolerance
 end
@@ -2037,7 +2118,7 @@ function ScroomBot:followGripper(generation, character, humanoid, root)
 
         local offset = root.Position - gripperRoot.Position
         local distance = offset.Magnitude
-        if distance <= 2.75 then
+        if distance <= SCROOM_KNOCK_RANGE then
             humanoid:MoveTo(root.Position)
             return true
         end
@@ -3459,7 +3540,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             2812528388,
             56746289,
             255693925,
-            616708250,
         },
         aimbot = {
             aimkey_translation = {
@@ -16488,7 +16568,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return gate_result == true, gate_failure_reason
             end
 
-            local function CheckForTrinkets()
+            local function CheckForTrinkets(artifact_only)
                 local root = plr.Character and FindFirstChild(plr.Character, "HumanoidRootPart")
                 if not root then return end
 
@@ -16504,18 +16584,20 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if object.Name == "Part" and FindFirstChild(object, "ID") then
                         local trinketName, trinketColor, trinketZIndex = cheat_client:identify_trinket(object)
                         local should_pickup = true
+                        local is_mythic = trinketColor == cheat_client.trinket_colors.mythic.Color
+                        local is_artifact = trinketColor == cheat_client.trinket_colors.artifact.Color
+                        local is_event = trinketColor == cheat_client.trinket_colors.event.Color
+                        local is_common = trinketColor == cheat_client.trinket_colors.common.Color
+                        local is_rare = trinketColor == cheat_client.trinket_colors.rare.Color
 
-                        if ignore_ice and trinketName == "Ice Essence" then
+                        if artifact_only then
+                            should_pickup = (is_mythic or is_artifact)
+                                and selected_mythics_artifacts[trinketName] == true
+                        elseif ignore_ice and trinketName == "Ice Essence" then
                             should_pickup = false
                         elseif trinketName == "Scroll" then
                             should_pickup = not ignore_scrolls
                         else
-                            local is_mythic = trinketColor == cheat_client.trinket_colors.mythic.Color
-                            local is_artifact = trinketColor == cheat_client.trinket_colors.artifact.Color
-                            local is_event = trinketColor == cheat_client.trinket_colors.event.Color
-                            local is_common = trinketColor == cheat_client.trinket_colors.common.Color
-                            local is_rare = trinketColor == cheat_client.trinket_colors.rare.Color
-
                             if is_mythic or is_artifact then
                                 should_pickup = selected_mythics_artifacts[trinketName] == true
                             elseif is_event then
@@ -16546,8 +16628,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if object.Name == "Part" and FindFirstChild(object, "ID") then
                         local trinketName, trinketColor, trinketZIndex = cheat_client:identify_trinket(object)
                         local should_pickup = true
+                        local is_mythic = trinketColor == cheat_client.trinket_colors.mythic.Color
+                        local is_artifact = trinketColor == cheat_client.trinket_colors.artifact.Color
+                        local is_event = trinketColor == cheat_client.trinket_colors.event.Color
 
-                        if ignore_ice and trinketName == "Ice Essence" then
+                        if artifact_only then
+                            should_pickup = (is_mythic or is_artifact)
+                                and selected_mythics_artifacts[trinketName] == true
+                        elseif ignore_ice and trinketName == "Ice Essence" then
                             should_pickup = false
                         elseif ignore_phoenix_down and trinketName == "Phoenix Down" then
                             should_pickup = false
@@ -16556,9 +16644,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         elseif trinketName == "Scroll" then
                             should_pickup = not ignore_scrolls
                         elseif not pickup_trinkets then
-                            local is_mythic = trinketColor == cheat_client.trinket_colors.mythic.Color
-                            local is_artifact = trinketColor == cheat_client.trinket_colors.artifact.Color
-                            local is_event = trinketColor == cheat_client.trinket_colors.event.Color
                             should_pickup = is_mythic or is_artifact or is_event
                         end
 
@@ -18256,7 +18341,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 local iceDragonRoot = FindFirstChild(iceDragon, "HumanoidRootPart")
                                 if iceDragonRoot then
                                     local dragon_distance = (iceDragonRoot.Position - bot_pos).Magnitude
-                                    if dragon_distance <= 175 then
+                                    if dragon_distance <= 200 then
                                         local current_index = 1
                                         local min_dist = math.huge
                                         for idx, pt in ipairs(trinket_bot.path_points) do
@@ -18700,6 +18785,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 kick_gate_handled = true
                             end
                         end
+                    end
+
+                    if ice_dragon_skip_index and ice_dragon_skip_index <= i then
+                        ice_dragon_skip_index = nil
                     end
 
                     if ice_dragon_skip_index and ice_dragon_skip_index > i then
@@ -20130,6 +20219,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                             if is_ice_dragon_near then
                                 warn(string.format("skipping trinket collection - Ice Dragon within %.0f studs of wait point", ice_dragon_dist))
+                                CheckForTrinkets(true)
                             elseif should_skip_trinkets then
                                 warn("skipping trinket collection due to danger")
                             elseif is_tundra2_danger then
@@ -25516,7 +25606,36 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 shared.ThemeManager:SetFolder("HYDROXIDE")
 
                 shared.SaveManager:SetIgnoreIndexes({
+                    -- Trinket path editor state is temporary; runtime bot settings
+                    -- are owned by each path file instead of the global config.
+                    "PointWaitTime",
+                    "CreatePointKeybind",
+                    "GateLocation",
+                    "PathName",
                     "SavedPaths",
+                    "SkipIllusionist",
+                    "PickupMythicsArtifacts",
+                    "PickupScrolls",
+                    "PickupIceEssence",
+                    "PickupEventItems",
+                    "PickupTrinkets",
+                    "KickOnTrinket",
+                    "KickTrinketList",
+                    "EmergencyServerhopConditions",
+                    "DisableGPURendering",
+                    "JoinOldestServer",
+                    "AutoPopPDs",
+                    "AutoDropItems",
+                    "ProximityCheck",
+                    "CriticalDistance",
+                    "MinPlayerCount",
+                    "TrinketBotSpeed",
+                    "StayInServer",
+                    "ReequipGateInLoop",
+                    "TimeBetweenLooting",
+                    "StopAtPhoenixFlowers",
+                    "PhoenixFlowerTarget",
+                    "StopAtDeaths",
                     "GachaBot",
                     "GachaProximityCheck",
                     "GachaProximity",
