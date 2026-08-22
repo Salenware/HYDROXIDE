@@ -1226,7 +1226,7 @@ function GachaBot:recordRoll(name)
     local fields = {
         {name = "Roll", value = name, inline = true},
     }
-    local title = complete and "Gacha target completed - stopping bot" or "Gacha roll"
+    local title = complete and "Gacha target completed - kicking" or "Gacha roll"
     self:sendWebhook("scroll", mention, title, fields, rare and 15158332 or 3447003)
     return complete
 end
@@ -1356,13 +1356,36 @@ function GachaBot:performGacha(token, npc, clickDetector)
         if roll then
             local complete = self:recordRoll(roll)
             if complete then
-                self:notify("Gacha scroll target reached - stopping bot", 6)
-                self:menuUntilSuccess(token, false)
-                self:Stop(false)
-                task.defer(function()
-                    local toggle = self.toggles and self.toggles.GachaBot
-                    if toggle and toggle.Value then toggle:SetValue(false) end
-                end)
+                self.action = "TARGET_COMPLETE"
+                self.pendingMenuAt = nil
+                self.pendingHopReason = nil
+                self:setState("TARGET COMPLETE", "waiting for roll to settle")
+                while self:isCurrent(token) and os.clock() < (self.postGachaHoldUntil or 0) do
+                    if not self:isSafeServerMode()
+                        and self.player.Character
+                        and not self:hasStartMenu()
+                        and not self:hasForceField(self.player.Character)
+                    then
+                        self.menuEmergencyRequested = true
+                        self:menuUntilSuccess(token, true)
+                        break
+                    end
+                    task.wait(0.05)
+                end
+
+                if not self:isSafeServerMode()
+                    and self.player.Character
+                    and not self:hasStartMenu()
+                    and not self:hasForceField(self.player.Character)
+                then
+                    self.menuEmergencyRequested = true
+                    self:menuUntilSuccess(token, true)
+                end
+
+                self:setState("TARGET COMPLETE", "kicking")
+                self:notify("Gacha scroll target reached - kicking", 6)
+                task.wait(0.1)
+                self.player:Kick("Gacha target completed: " .. roll)
                 return
             end
         else
@@ -1749,7 +1772,7 @@ function GachaBot:BuildUI(tab)
         Multi = true,
         Searchable = false,
         AllowNull = true,
-        Tooltip = "With multiple selections, stops after every selected roll has been obtained.",
+        Tooltip = "With multiple selections, kicks after every selected roll has been obtained.",
     })
     settings:AddInput("GachaGeneralWebhook", {
         Text = "General Webhook",
@@ -21226,21 +21249,36 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                     trinket_bot.path_running = false
 
-                    local should_skip_illusionist = false
-                    trinket_bot.auto_start_stop_at_phoenix_flowers = false
-                    trinket_bot.auto_start_stop_at_deaths = 3
-                    if mem:HasItem("trinket_bot_settings") then
-                        local httpService = Services.HttpService
-                        local success_load, loaded_settings = pcall(function()
-                            return httpService:JSONDecode(mem:GetItem("trinket_bot_settings"))
-                        end)
-                        if success_load and loaded_settings then
-                            should_skip_illusionist = loaded_settings.skip_illusionist or false
-                            trinket_bot.auto_start_stop_at_phoenix_flowers = game.PlaceId == 3541987450
-                                and loaded_settings.stop_at_phoenix_flowers == true
-                            trinket_bot.auto_start_stop_at_deaths = tonumber(loaded_settings.stop_at_deaths) or 3
-                        end
+                    -- Load the path before any pre-spawn safety hop. Otherwise a
+                    -- mod/Illusionist hop can snapshot default UI values and the
+                    -- next server will overwrite the path settings with them.
+                    local saved_path = mem:GetItem("trinket_bot_path")
+                    if not saved_path or saved_path == "" then
+                        utility:plain_webhook("@everyone CRITICAL: No saved path found during auto-start (trinket_bot_path empty) - kicking for safety")
+                        library:Notify("CRITICAL: No saved path found - kicking")
+                        mem:RemoveItem("botstarted")
+                        release_disable_beds_for_bot()
+                        task.wait(0.5)
+                        plr:Kick("No saved path found during auto-start")
+                        return
                     end
+
+                    local load_success = load_path_by_name(saved_path)
+                    if not load_success or #trinket_bot.path_points == 0 then
+                        utility:plain_webhook(string.format("FAILED TO LOAD PATH: %s (load_success=%s, points=%d) - Kicking", saved_path, tostring(load_success), #trinket_bot.path_points))
+                        library:Notify("Path failed to load! Kicking...")
+                        mem:RemoveItem("botstarted")
+                        release_disable_beds_for_bot()
+                        task.wait(1)
+                        plr:Kick(string.format("Path failed to load: %s", saved_path))
+                        return
+                    end
+
+                    local should_skip_illusionist = Toggles.SkipIllusionist and Toggles.SkipIllusionist.Value or false
+                    trinket_bot.auto_start_stop_at_phoenix_flowers = game.PlaceId == 3541987450
+                        and Toggles.StopAtPhoenixFlowers
+                        and Toggles.StopAtPhoenixFlowers.Value == true
+                    trinket_bot.auto_start_stop_at_deaths = tonumber(Options.StopAtDeaths and Options.StopAtDeaths.Value) or 3
 
                     trinket_bot.last_known_deaths = tonumber(Get("Deaths"))
 
@@ -21447,49 +21485,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             task.wait(0.5)
                             plr:Kick("Character lost during auto-start")
                             return
-                        end
-
-                        local saved_path = mem:GetItem("trinket_bot_path")
-                        if not saved_path or saved_path == "" then
-                            if auto_start_death_connection then
-                                pcall(function() auto_start_death_connection:Disconnect() end)
-                                auto_start_death_connection = nil
-                            end
-                            utility:plain_webhook("@everyone CRITICAL: No saved path found during auto-start (trinket_bot_path empty) - kicking for safety")
-                            library:Notify("CRITICAL: No saved path found - kicking")
-                            mem:RemoveItem("botstarted")
-                            release_disable_beds_for_bot()
-                            task.wait(0.5)
-                            plr:Kick("No saved path found during auto-start")
-                            return
-                        end
-
-                        local load_success = load_path_by_name(saved_path)
-                        task.wait(1)
-
-                        if not load_success or #trinket_bot.path_points == 0 then
-                            if auto_start_death_connection then
-                                pcall(function() auto_start_death_connection:Disconnect() end)
-                                auto_start_death_connection = nil
-                            end
-                            utility:plain_webhook(string.format("FAILED TO LOAD PATH: %s (load_success=%s, points=%d) - Kicking", saved_path, tostring(load_success), #trinket_bot.path_points))
-                            library:Notify("Path failed to load! Kicking...")
-                            mem:RemoveItem("botstarted")
-                            release_disable_beds_for_bot()
-                            task.wait(1)
-                            plr:Kick(string.format("Path failed to load: %s", saved_path))
-                            return
-                        end
-
-                        if mem:HasItem("trinket_bot_settings") then
-                            local httpService = Services.HttpService
-                            local success, settings = pcall(function()
-                                return httpService:JSONDecode(mem:GetItem("trinket_bot_settings"))
-                            end)
-
-                            if success then
-                                apply_settings(settings)
-                            end
                         end
 
                         if trinket_bot.restart_path_after_gate_reset then
