@@ -1285,11 +1285,6 @@ function GachaBot:performGacha(token, npc, clickDetector)
             if not solved then
                 self:notify("Captcha solver failed: " .. tostring(solveError), 6)
                 result = "SOLVER_FAILED"
-                local toggle = self.toggles and self.toggles.GachaBot
-                task.defer(function()
-                    if toggle and toggle.Value then toggle:SetValue(false) end
-                end)
-                self:Stop(false)
                 break
             end
             local closeDeadline = os.clock() + 12
@@ -1320,24 +1315,18 @@ function GachaBot:performGacha(token, npc, clickDetector)
     self:disconnectList(dialogueConnections)
     if childConnection then pcall(childConnection.Disconnect, childConnection) end
     if restoreAutoDialogue and autoDialogue then pcall(autoDialogue.SetValue, autoDialogue, true) end
-    self.action = nil
-
     if not self:isCurrent(token) then return end
-    if not self:isSafeServerMode() and not self:hasForceField(self.player.Character) then
-        return self:menuUntilSuccess(token, true)
-    end
 
     if result == "LOW_SILVER" then
         self:setState("LOW SILVER")
         self:sendWebhook("general", "", "Gacha bot has insufficient silver", {
             {name = "Silver", value = tostring(self:getSilver() or "N/A"), inline = true},
         }, 15105570)
-        self:menuUntilSuccess(token, false)
         if self:getToggle("GachaKickLowSilver", true) then
-            self:Stop(false)
-            task.wait(0.25)
+            self:setState("LOW SILVER", "kicking")
             self.player:Kick("Gacha bot: insufficient silver")
         else
+            self:menuUntilSuccess(token, false)
             self.terminalMenu = true
             self:setState("LOW SILVER", "sitting in menu")
             self:saveRuntime()
@@ -1351,44 +1340,36 @@ function GachaBot:performGacha(token, npc, clickDetector)
         self:saveRuntime()
     end
 
+    local roll = nil
+    local complete = false
     if result == "SUCCESS" then
-        local roll = self:findNewRoll(before, observedRoll)
+        roll = self:findNewRoll(before, observedRoll)
         if roll then
-            local complete = self:recordRoll(roll)
-            if complete then
-                self.action = "TARGET_COMPLETE"
-                self.pendingMenuAt = nil
-                self.pendingHopReason = nil
-                self:setState("TARGET COMPLETE", "waiting for roll to settle")
-                while self:isCurrent(token) and os.clock() < (self.postGachaHoldUntil or 0) do
-                    if not self:isSafeServerMode()
-                        and self.player.Character
-                        and not self:hasStartMenu()
-                        and not self:hasForceField(self.player.Character)
-                    then
-                        self.menuEmergencyRequested = true
-                        self:menuUntilSuccess(token, true)
-                        break
-                    end
-                    task.wait(0.05)
-                end
+            complete = self:recordRoll(roll)
+        end
+    end
 
-                if not self:isSafeServerMode()
-                    and self.player.Character
-                    and not self:hasStartMenu()
-                    and not self:hasForceField(self.player.Character)
-                then
-                    self.menuEmergencyRequested = true
-                    self:menuUntilSuccess(token, true)
-                end
+    if complete then
+        self.action = "TARGET_COMPLETE"
+        self.pendingMenuAt = nil
+        self.pendingHopReason = nil
+        self:setState("TARGET COMPLETE", "waiting for roll to settle")
+        self:notify(roll .. " rolled - kicking in 2 seconds", 4)
+        while os.clock() < (self.postGachaHoldUntil or 0) do
+            task.wait(0.05)
+        end
 
-                self:setState("TARGET COMPLETE", "kicking")
-                self:notify("Gacha scroll target reached - kicking", 6)
-                task.wait(0.1)
-                self.player:Kick("Gacha target completed: " .. roll)
-                return
-            end
-        else
+        self:setState("TARGET COMPLETE", "kicking")
+        self.player:Kick("Gacha target completed: " .. roll)
+        return
+    end
+
+    if not self:isSafeServerMode() and not self:hasForceField(self.player.Character) then
+        return self:menuUntilSuccess(token, true)
+    end
+
+    if result == "SUCCESS" then
+        if not roll then
             self:sendWebhook("scroll", "", "Gacha succeeded but roll was not detected", {
                 {name = "Days Survived", value = tostring(self:getDays() or "N/A"), inline = true},
                 {name = "Silver Remaining", value = tostring(self:getSilver() or "N/A"), inline = true},
@@ -1405,6 +1386,7 @@ function GachaBot:performGacha(token, npc, clickDetector)
         self:menuUntilSuccess(token, false)
         return self:serverhop(token, "Xenyari interaction timed out")
     end
+    self.action = nil
 end
 
 function GachaBot:handleSpawned(token, npc, head, click)
@@ -1454,11 +1436,10 @@ function GachaBot:handleSpawned(token, npc, head, click)
         self.tooFarSince = self.tooFarSince or os.clock()
         if os.clock() - self.tooFarSince >= 6 then
             local message = string.format("@here %s Too far from Xenyari (maybe dead) - kicking", self.player.Name)
-            self:sendWebhook("general", message, "Gacha bot stopped", {
+            self:sendWebhook("general", message, "Gacha bot safety kick", {
                 {name = "Distance", value = string.format("%.1f studs", (root.Position - head.Position).Magnitude), inline = true},
             }, 15158332)
-            self:Stop(false)
-            task.wait(0.25)
+            self:setState("TOO FAR", "kicking")
             self.player:Kick("Too far from Xenyari (maybe dead)")
             return
         end
@@ -1518,7 +1499,12 @@ function GachaBot:forceFieldWatchdog(token)
     while self:isCurrent(token) do
         if not self:isSafeServerMode() then
             local character = self.player.Character
-            if character and self.action ~= "GACHA" and not self:hasStartMenu() and not self:hasForceField(character) then
+            if character
+                and self.action ~= "GACHA"
+                and self.action ~= "TARGET_COMPLETE"
+                and not self:hasStartMenu()
+                and not self:hasForceField(character)
+            then
                 self.menuEmergencyRequested = true
                 self:menuUntilSuccess(token, true)
             end
@@ -21330,8 +21316,56 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             if not mem:HasItem("trinket_bot_gate_recovery_reset_job")
                                 or mem:GetItem("trinket_bot_gate_recovery_reset_job") ~= game.JobId
                             then
+                                local gate_recovery_failure = "reset timed out"
                                 if not (function()
                                     local reset_character = plr.Character
+                                    local inventory_wait_started = tick()
+                                    local inventory_deadline = inventory_wait_started + 25
+                                    local inventory_signature = nil
+                                    local inventory_stable_since = nil
+                                    local inventory_ready = false
+
+                                    library:Notify("Stuck Gate recovery - waiting for inventory before reset")
+                                    repeat
+                                        if plr.Character ~= reset_character or not reset_character.Parent then
+                                            return plr.Character and FindFirstChild(plr.Character, "HumanoidRootPart") ~= nil
+                                        end
+
+                                        local backpack = FindFirstChild(plr, "Backpack")
+                                        if backpack then
+                                            local inventory_items = {}
+                                            for _, item in ipairs(backpack:GetChildren()) do
+                                                inventory_items[#inventory_items + 1] = item.ClassName .. "\0" .. item.Name
+                                            end
+                                            table.sort(inventory_items)
+
+                                            local signature = table.concat(inventory_items, "\1")
+                                            if signature ~= inventory_signature then
+                                                inventory_signature = signature
+                                                inventory_stable_since = tick()
+                                            else
+                                                inventory_stable_since = inventory_stable_since or tick()
+                                            end
+
+                                            local gate_loaded = FindFirstChild(backpack, "Gate")
+                                                or FindFirstChild(reset_character, "Gate")
+                                            if gate_loaded
+                                                and tick() - inventory_wait_started >= 5
+                                                and inventory_stable_since
+                                                and tick() - inventory_stable_since >= 2
+                                            then
+                                                inventory_ready = true
+                                                break
+                                            end
+                                        end
+                                        task.wait(0.25)
+                                    until tick() >= inventory_deadline
+
+                                    if not inventory_ready then
+                                        gate_recovery_failure = "inventory did not finish loading"
+                                        return false
+                                    end
+
                                     while plr.Character == reset_character
                                         and reset_character.Parent
                                         and cs:HasTag(reset_character, "Danger")
@@ -21358,8 +21392,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         and plr.Character ~= reset_character
                                         and FindFirstChild(plr.Character, "HumanoidRootPart") ~= nil
                                 end)() then
-                                    library:Notify("Gate recovery reset timed out - serverhopping")
-                                    TrinketBotServerhop("Gate recovery respawn failed")
+                                    library:Notify("Gate recovery failed (" .. gate_recovery_failure .. ") - serverhopping")
+                                    TrinketBotServerhop("Gate recovery failed: " .. gate_recovery_failure)
                                     return
                                 end
 
