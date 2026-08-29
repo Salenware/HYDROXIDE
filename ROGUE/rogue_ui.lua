@@ -370,6 +370,8 @@ function GachaBot:getToolType(tool)
     if toolType ~= nil then return tostring(toolType) end
     local value = tool:FindFirstChild("ToolType")
     if value and value:IsA("ValueBase") then return tostring(value.Value) end
+    local sit = tool:FindFirstChild("Sit", true)
+    if sit and sit:IsA("Animation") then return "Chair" end
     return nil
 end
 
@@ -3626,15 +3628,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             }
         end)
 
-        if success then
-            print(string.format(
-                "[Moderators] Loaded %d Stella IDs (%d hardcoded, %d total), version %s",
-                result.added,
-                hardcoded_count,
-                #cheat_client.mod_list,
-                tostring(result.version or "unknown")
-            ))
-        else
+        if not success then
             warn("[Moderators] Stella snapshot unavailable; using hardcoded list only:", result)
         end
     end
